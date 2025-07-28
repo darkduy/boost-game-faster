@@ -3,6 +3,7 @@ package com.boostgamefaster;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -36,6 +37,9 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
             WritableArray appList = new WritableNativeArray();
 
             for (ActivityManager.RunningAppProcessInfo process : processes) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+                    continue; // Skip foreground apps on Android 10+
+                }
                 WritableMap appInfo = new WritableNativeMap();
                 appInfo.putString("name", process.processName);
                 appInfo.putInt("pid", process.pid);
@@ -58,12 +62,15 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
             for (ActivityManager.RunningAppProcessInfo process : processes) {
                 if (!process.processName.equals(packageName)) {
                     try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+                            continue; // Skip foreground apps
+                        }
                         activityManager.killBackgroundProcesses(process.processName);
                         WritableMap appInfo = new WritableNativeMap();
                         appInfo.putString("name", process.processName);
                         closedApps.pushMap(appInfo);
                     } catch (SecurityException e) {
-                        // Skip apps that can't be closed due to permissions
+                        // Skip apps that can't be closed
                     }
                 }
             }
