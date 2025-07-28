@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Alert, AccessibilityInfo, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, Alert, AccessibilityInfo, ActivityIndicator } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import NetInfo from '@react-native-community/netinfo';
 import DeviceInfo from 'react-native-device-info';
 import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as firebaseCrashlytics from '@react-native-firebase/crashlytics';
 import SystemStatus from './components/SystemStatus';
 import GameList from './components/GameList';
 import NetworkOptimizer from './components/NetworkOptimizer';
+import OnboardingScreen from './screens/OnboardingScreen';
 
 const { BackgroundProcess, SystemSettings, GameDetector } = NativeModules;
 
@@ -26,6 +28,7 @@ const BoostGameFaster = () => {
   const [runningApps, setRunningApps] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorCount, setErrorCount] = useState({ background: 0, settings: 0, games: 0 });
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Memoized mock games
   const mockGames = useMemo(() => [
@@ -34,10 +37,13 @@ const BoostGameFaster = () => {
     { name: 'Racing Game', packageName: 'com.racing.game', status: 'Ready', resolution: '1600x900', fpsCap: '60' },
   ], []);
 
-  // Check permissions
+  // Check permissions and show onboarding
   const checkPermissions = useCallback(async () => {
     const writeSettings = await request(PERMISSIONS.ANDROID.WRITE_SETTINGS);
     const queryPackages = await request(PERMISSIONS.ANDROID.QUERY_ALL_PACKAGES);
+    if (writeSettings !== RESULTS.GRANTED || queryPackages !== RESULTS.GRANTED) {
+      setShowOnboarding(true);
+    }
     if (writeSettings !== RESULTS.GRANTED) {
       Alert.alert('Permission Required', 'Please enable Modify System Settings in app permissions.');
     }
@@ -55,9 +61,10 @@ const BoostGameFaster = () => {
       setErrorCount(prev => ({ ...prev, background: 0 }));
     } catch (error) {
       setErrorCount(prev => ({ ...prev, background: prev.background + 1 }));
+      firebaseCrashlytics.log('Error fetching running apps: ' + error.message);
       await AsyncStorage.setItem('error_log', JSON.stringify({ time: new Date(), error: error.message }));
       if (errorCount.background < 2) {
-        setTimeout(fetchRunningApps, 1000); // Retry after 1s
+        setTimeout(fetchRunningApps, 1000);
       }
     }
   }, [errorCount.background]);
@@ -67,18 +74,36 @@ const BoostGameFaster = () => {
     if (errorCount.games >= 3) return setGames(mockGames);
     try {
       const games = await GameDetector.getInstalledGames();
-      setGames(games.length ? games : mockGames);
+      const storedSettings = await AsyncStorage.getItem('game_settings');
+      const settings = storedSettings ? JSON.parse(storedSettings) : {};
+      const updatedGames = games.length ? games.map(game => ({
+        ...game,
+        resolution: settings[game.packageName]?.resolution || game.resolution,
+        fpsCap: settings[game.packageName]?.fpsCap || game.fpsCap,
+      })) : mockGames;
+      setGames(updatedGames);
       setErrorCount(prev => ({ ...prev, games: 0 }));
     } catch (error) {
+      firebaseCrashlytics.log('Error fetching games: ' + error.message);
       setErrorCount(prev => ({ ...prev, games: prev.games + 1 }));
       await AsyncStorage.setItem('error_log', JSON.stringify({ time: new Date(), error: error.message }));
       if (errorCount.games < 2) {
-        setTimeout(fetchGames, 1000); // Retry after 1s
+        setTimeout(fetchGames, 1000);
       } else {
         setGames(mockGames);
       }
     }
   }, [errorCount.games, mockGames]);
+
+  // Add manual game
+  const addManualGame = useCallback(async (name, packageName) => {
+    const newGame = { name, packageName, status: 'Ready', resolution: '1920x1080', fpsCap: '60' };
+    setGames(prev => [...prev, newGame]);
+    const storedSettings = await AsyncStorage.getItem('game_settings');
+    const settings = storedSettings ? JSON.parse(storedSettings) : {};
+    settings[packageName] = { resolution: '1920x1080', fpsCap: '60' };
+    await AsyncStorage.setItem('game_settings', JSON.stringify(settings));
+  }, []);
 
   useEffect(() => {
     checkPermissions();
@@ -90,7 +115,6 @@ const BoostGameFaster = () => {
   const boostSystem = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Close background apps
       const closedApps = await BackgroundProcess.closeBackgroundApps();
       setSystemStatus({
         cpuUsage: Math.max(10, systemStatus.cpuUsage - 20),
@@ -100,11 +124,11 @@ const BoostGameFaster = () => {
       });
       setRunningApps(runningApps.filter(app => !closedApps.some(closed => closed.name === app.name)));
 
-      // Enable high performance mode
       const settingsMessage = await SystemSettings.enableHighPerformanceMode();
       Alert.alert('Boost Complete', `Closed ${closedApps.length} apps: ${closedApps.map(app => app.name).join(', ')}. ${settingsMessage}`);
       setErrorCount(prev => ({ ...prev, background: 0, settings: 0 }));
     } catch (error) {
+      firebaseCrashlytics.recordError(error);
       const module = error.message.includes('WRITE_SETTINGS') ? 'settings' : 'background';
       setErrorCount(prev => ({ ...prev, [module]: prev[module] + 1 }));
       await AsyncStorage.setItem('error_log', JSON.stringify({ time: new Date(), error: error.message }));
@@ -114,11 +138,16 @@ const BoostGameFaster = () => {
     }
   }, [systemStatus, runningApps]);
 
-  // Update GFX settings
-  const updateGFX = useCallback((packageName, resolution, fpsCap) => {
+  // Update GFX settings and save to AsyncStorage
+  const updateGFX = useCallback(async (packageName, resolution, fpsCap) => {
     setGames(prev => prev.map(game =>
       game.packageName === packageName ? { ...game, resolution, fpsCap } : game
     ));
+    const storedSettings = await AsyncStorage.getItem('game_settings');
+    const settings = storedSettings ? JSON.parse(storedSettings) : {};
+    settings[packageName] = { resolution, fpsCap };
+    await AsyncStorage.setItem('game_settings', JSON.stringify(settings));
+    Alert.alert('Note', 'Resolution and FPS settings are suggestions and may require in-game adjustments.');
   }, []);
 
   // Launch game
@@ -127,6 +156,7 @@ const BoostGameFaster = () => {
       const message = await GameDetector.launchGame(packageName);
       Alert.alert('Success', message);
     } catch (error) {
+      firebaseCrashlytics.recordError(error);
       Alert.alert('Error', error.message);
     }
   }, []);
@@ -160,6 +190,10 @@ const BoostGameFaster = () => {
     boostSystem();
     AccessibilityInfo.announceForAccessibility('System boosted successfully');
   }, [boostSystem]);
+
+  if (showOnboarding) {
+    return <OnboardingScreen onComplete={() => setShowOnboarding(false)} />;
+  }
 
   return (
     <ScrollView style={tailwind('bg-gray-900')}>
@@ -199,7 +233,7 @@ const BoostGameFaster = () => {
         <SystemStatus systemStatus={systemStatus} />
 
         {/* Game List */}
-        <GameList games={games} updateGFX={updateGFX} launchGame={launchGame} />
+        <GameList games={games} updateGFX={updateGFX} launchGame={launchGame} addManualGame={addManualGame} />
       </View>
     </ScrollView>
   );
