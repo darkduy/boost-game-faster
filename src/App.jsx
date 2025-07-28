@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, Alert, AccessibilityInfo, NativeModules } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Alert, AccessibilityInfo } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import NetInfo from '@react-native-community/netinfo';
@@ -8,7 +8,7 @@ import SystemStatus from './components/SystemStatus';
 import GameList from './components/GameList';
 import NetworkOptimizer from './components/NetworkOptimizer';
 
-const { BackgroundProcess } = NativeModules;
+const { BackgroundProcess, SystemSettings } = NativeModules;
 
 const BoostGameFaster = () => {
   const tailwind = useTailwind();
@@ -34,8 +34,9 @@ const BoostGameFaster = () => {
       .catch(error => Alert.alert('Error', error.message));
   }, []);
 
-  // Simulate system boost with native module
+  // Simulate system boost with native modules
   const boostSystem = () => {
+    // Close background apps
     BackgroundProcess.closeBackgroundApps()
       .then(closedApps => {
         setSystemStatus({
@@ -44,8 +45,16 @@ const BoostGameFaster = () => {
           fps: Math.min(60, systemStatus.fps + 15),
           ping: Math.max(20, systemStatus.ping - 30),
         });
-        Alert.alert('Boost Complete', `Closed ${closedApps.length} background apps. Performance optimized!`);
         setRunningApps(runningApps.filter(app => !closedApps.some(closed => closed.name === app.name)));
+
+        // Enable high performance mode
+        SystemSettings.enableHighPerformanceMode()
+          .then(message => {
+            Alert.alert('Boost Complete', `Closed ${closedApps.length} background apps. ${message}`);
+          })
+          .catch(error => {
+            Alert.alert('Warning', error.message);
+          });
       })
       .catch(error => Alert.alert('Error', 'Failed to close apps: ' + error.message));
   };
