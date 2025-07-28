@@ -1,0 +1,25 @@
+apply plugin: 'com.android.application'
+apply plugin: 'com.facebook.react'
+
+android {
+    compileSdkVersion 33
+    defaultConfig {
+        applicationId "com.boostgamefaster"
+        minSdkVersion 21
+        targetSdkVersion 33
+        versionCode 1
+        versionName "1.0"
+    }
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'com.facebook.react:react-native:+'
+    implementation 'androidx.core:core:1.9.0'
+}
