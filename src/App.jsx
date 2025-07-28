@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, Alert, AccessibilityInfo, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, Alert, AccessibilityInfo, ActivityIndicator, Platform } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import NetInfo from '@react-native-community/netinfo';
@@ -12,7 +12,7 @@ import GameList from './components/GameList';
 import NetworkOptimizer from './components/NetworkOptimizer';
 import OnboardingScreen from './screens/OnboardingScreen';
 
-const { BackgroundProcess, SystemSettings, GameDetector } = NativeModules;
+const { BackgroundProcess, SystemSettings, GameDetector, GameMode } = NativeModules;
 
 const BoostGameFaster = () => {
   const tailwind = useTailwind();
@@ -29,6 +29,7 @@ const BoostGameFaster = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorCount, setErrorCount] = useState({ background: 0, settings: 0, games: 0 });
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [oemManufacturer, setOemManufacturer] = useState('');
 
   // Memoized mock games
   const mockGames = useMemo(() => [
@@ -36,6 +37,19 @@ const BoostGameFaster = () => {
     { name: 'RPG Adventure', packageName: 'com.rpg.adventure', status: 'Ready', resolution: '1280x720', fpsCap: '30' },
     { name: 'Racing Game', packageName: 'com.racing.game', status: 'Ready', resolution: '1600x900', fpsCap: '60' },
   ], []);
+
+  // Check OEM restrictions
+  useEffect(() => {
+    DeviceInfo.getManufacturer().then(manufacturer => {
+      setOemManufacturer(manufacturer.toLowerCase());
+      if (['xiaomi', 'samsung', 'oppo', 'vivo'].includes(manufacturer.toLowerCase())) {
+        Alert.alert(
+          'Device Restriction',
+          `Your device (${manufacturer}) may restrict some optimizations. Please enable Game Mode or clear background apps manually in Settings.`,
+        );
+      }
+    });
+  }, []);
 
   // Check permissions and show onboarding
   const checkPermissions = useCallback(async () => {
@@ -52,22 +66,22 @@ const BoostGameFaster = () => {
     }
   }, []);
 
-  // Fetch running apps with retry
+  // Fetch running apps with OEM workaround
   const fetchRunningApps = useCallback(async () => {
     if (errorCount.background >= 3) return;
     try {
-      const apps = await BackgroundProcess.getRunningApps();
+      const apps = await BackgroundProcess.getRunningApps(oemManufacturer);
       setRunningApps(apps);
       setErrorCount(prev => ({ ...prev, background: 0 }));
     } catch (error) {
-      setErrorCount(prev => ({ ...prev, background: prev.background + 1 }));
       firebaseCrashlytics.log('Error fetching running apps: ' + error.message);
+      setErrorCount(prev => ({ ...prev, background: prev.background + 1 }));
       await AsyncStorage.setItem('error_log', JSON.stringify({ time: new Date(), error: error.message }));
       if (errorCount.background < 2) {
         setTimeout(fetchRunningApps, 1000);
       }
     }
-  }, [errorCount.background]);
+  }, [errorCount.background, oemManufacturer]);
 
   // Fetch installed games with retry
   const fetchGames = useCallback(async () => {
@@ -115,7 +129,7 @@ const BoostGameFaster = () => {
   const boostSystem = useCallback(async () => {
     setIsLoading(true);
     try {
-      const closedApps = await BackgroundProcess.closeBackgroundApps();
+      const closedApps = await BackgroundProcess.closeBackgroundApps(oemManufacturer);
       setSystemStatus({
         cpuUsage: Math.max(10, systemStatus.cpuUsage - 20),
         ramUsage: Math.max(10, systemStatus.ramUsage - 20),
@@ -136,7 +150,7 @@ const BoostGameFaster = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [systemStatus, runningApps]);
+  }, [systemStatus, runningApps, oemManufacturer]);
 
   // Update GFX settings and save to AsyncStorage
   const updateGFX = useCallback(async (packageName, resolution, fpsCap) => {
@@ -150,9 +164,12 @@ const BoostGameFaster = () => {
     Alert.alert('Note', 'Resolution and FPS settings are suggestions and may require in-game adjustments.');
   }, []);
 
-  // Launch game
+  // Launch game with Game Mode
   const launchGame = useCallback(async (packageName) => {
     try {
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        await GameMode.enableGameMode(packageName);
+      }
       const message = await GameDetector.launchGame(packageName);
       Alert.alert('Success', message);
     } catch (error) {
