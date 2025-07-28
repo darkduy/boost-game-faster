@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Boost Game Faster</string>
+    <string name="boost_now">Boost Now</string>
+    <string name="launch">Launch</string>
+    <string name="select_resolution">Select resolution for %1$s</string>
+    <string name="select_fps_cap">Select FPS cap for %1$s</string>
+    <string name="no_games_detected">No games detected. Please install some games or check permissions.</string>
+    <string name="permission_denied_write_settings">Please enable Modify System Settings in app permissions to optimize performance.</string>
+    <string name="permission_denied_query_packages">Please allow access to installed apps to detect games.</string>
+    <string name="boost_complete">Boost Complete! Closed %1$d background apps: %2$s. High performance mode enabled.</string>
+    <string name="boost_error">Failed to boost system: %1$s</string>
+    <string name="launch_error">Could not launch game: %1$s</string>
+    <string name="network_status">Network Status: %1$s</string>
+    <string name="current_ping">Current Ping: %1$d ms</string>
+    <string name="select_vpn_server">Select VPN Server</string>
+    <string name="auto">Auto</string>
+    <string name="singapore">Singapore</string>
+    <string name="usa">USA</string>
+    <string name="japan">Japan</string>
+</resources>
