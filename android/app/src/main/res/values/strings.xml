@@ -17,4 +17,10 @@
     <string name="singapore">Singapore</string>
     <string name="usa">USA</string>
     <string name="japan">Japan</string>
+    <string name="onboarding_title">Welcome to Boost Game Faster</string>
+    <string name="onboarding_step1">Step 1: Grant permission to modify system settings for performance optimization.</string>
+    <string name="onboarding_step2">Step 2: Allow access to installed apps to detect games.</string>
+    <string name="onboarding_grant">Grant Permissions</string>
+    <string name="add_game">Add Game Manually</string>
+    <string name="gfx_note">Note: Resolution and FPS settings are suggestions and may require in-game adjustments.</string>
 </resources>
