@@ -1,11 +1,13 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
-import { Picker } from 'react-native'; // Ensure Picker is imported correctly
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, TextInput, Alert } from 'react-native';
+import { Picker } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
-const GameList = ({ games, updateGFX, launchGame }) => {
+const GameList = ({ games, updateGFX, launchGame, addManualGame }) => {
   const tailwind = useTailwind();
+  const [manualGameName, setManualGameName] = useState('');
+  const [manualPackageName, setManualPackageName] = useState('');
 
   const renderGame = ({ item }) => (
     <Animated.View
@@ -57,11 +59,55 @@ const GameList = ({ games, updateGFX, launchGame }) => {
     </Animated.View>
   );
 
+  const handleAddGame = () => {
+    if (!manualGameName || !manualPackageName) {
+      Alert.alert('Error', 'Please enter both game name and package name.');
+      return;
+    }
+    addManualGame(manualGameName, manualPackageName);
+    setManualGameName('');
+    setManualPackageName('');
+    Alert.alert('Success', `${manualGameName} added to game list.`);
+  };
+
   return (
     <View style={tailwind('bg-gray-800 p-6 rounded-lg')}>
       <Text style={tailwind('text-2xl font-semibold text-white mb-4')}>
         Your Games
       </Text>
+      <Text style={tailwind('text-sm text-gray-400 mb-4')}>
+        Note: Resolution and FPS settings are suggestions and may require in-game adjustments.
+      </Text>
+      <View style={tailwind('mb-4')}>
+        <TextInput
+          style={tailwind('bg-gray-600 text-white p-2 rounded mb-2')}
+          placeholder="Game Name"
+          placeholderTextColor="gray"
+          value={manualGameName}
+          onChangeText={setManualGameName}
+          accessible={true}
+          accessibilityLabel="Enter game name"
+        />
+        <TextInput
+          style={tailwind('bg-gray-600 text-white p-2 rounded mb-2')}
+          placeholder="Package Name (e.g., com.example.game)"
+          placeholderTextColor="gray"
+          value={manualPackageName}
+          onChangeText={setManualPackageName}
+          accessible={true}
+          accessibilityLabel="Enter package name"
+        />
+        <TouchableOpacity
+          style={tailwind('bg-blue-600 p-2 rounded')}
+          onPress={handleAddGame}
+          accessible={true}
+          accessibilityLabel="Add game manually"
+        >
+          <Text style={tailwind('text-white text-center font-bold')}>
+            Add Game Manually
+          </Text>
+        </TouchableOpacity>
+      </View>
       {games.length === 0 ? (
         <ActivityIndicator color="white" />
       ) : (
