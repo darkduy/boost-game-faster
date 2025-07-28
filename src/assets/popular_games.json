@@ -1,0 +1,7 @@
+[
+  {"packageName": "com.tencent.ig", "name": "PUBG Mobile"},
+  {"packageName": "com.garena.game.codm", "name": "Call of Duty Mobile"},
+  {"packageName": "com.miHoYo.GenshinImpact", "name": "Genshin Impact"},
+  {"packageName": "com.supercell.clashofclans", "name": "Clash of Clans"},
+  {"packageName": "com.ea.game.fifa_mobile", "name": "FIFA Mobile"}
+]
