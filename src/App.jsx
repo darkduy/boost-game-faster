@@ -8,7 +8,7 @@ import SystemStatus from './components/SystemStatus';
 import GameList from './components/GameList';
 import NetworkOptimizer from './components/NetworkOptimizer';
 
-const { BackgroundProcess, SystemSettings } = NativeModules;
+const { BackgroundProcess, SystemSettings, GameDetector } = NativeModules;
 
 const BoostGameFaster = () => {
   const tailwind = useTailwind();
@@ -18,11 +18,7 @@ const BoostGameFaster = () => {
     fps: 30,
     ping: 100,
   });
-  const [games, setGames] = useState([
-    { name: 'FPS Shooter', status: 'Ready', resolution: '1920x1080', fpsCap: 60 },
-    { name: 'RPG Adventure', status: 'Ready', resolution: '1280x720', fpsCap: 30 },
-    { name: 'Racing Game', status: 'Ready', resolution: '1600x900', fpsCap: 60 },
-  ]);
+  const [games, setGames] = useState([]);
   const [vpnServer, setVpnServer] = useState('Auto');
   const [networkState, setNetworkState] = useState({ isConnected: true, type: 'wifi' });
   const [runningApps, setRunningApps] = useState([]);
@@ -32,6 +28,21 @@ const BoostGameFaster = () => {
     BackgroundProcess.getRunningApps()
       .then(apps => setRunningApps(apps))
       .catch(error => Alert.alert('Error', error.message));
+  }, []);
+
+  // Fetch installed games
+  useEffect(() => {
+    GameDetector.getInstalledGames()
+      .then(games => setGames(games))
+      .catch(error => {
+        Alert.alert('Error', error.message);
+        // Fallback to mock games if detection fails
+        setGames([
+          { name: 'FPS Shooter', packageName: 'com.fps.shooter', status: 'Ready', resolution: '1920x1080', fpsCap: '60' },
+          { name: 'RPG Adventure', packageName: 'com.rpg.adventure', status: 'Ready', resolution: '1280x720', fpsCap: '30' },
+          { name: 'Racing Game', packageName: 'com.racing.game', status: 'Ready', resolution: '1600x900', fpsCap: '60' },
+        ]);
+      });
   }, []);
 
   // Simulate system boost with native modules
@@ -60,15 +71,17 @@ const BoostGameFaster = () => {
   };
 
   // Update GFX settings
-  const updateGFX = (gameName, resolution, fpsCap) => {
+  const updateGFX = (packageName, resolution, fpsCap) => {
     setGames(games.map(game =>
-      game.name === gameName ? { ...game, resolution, fpsCap } : game
+      game.packageName === packageName ? { ...game, resolution, fpsCap } : game
     ));
   };
 
-  // Launch game (mock)
-  const launchGame = (gameName) => {
-    Alert.alert('Launching', `${gameName} with ${games.find(g => g.name === gameName).resolution} at ${games.find(g => g.name === gameName).fpsCap} FPS`);
+  // Launch game
+  const launchGame = (packageName) => {
+    GameDetector.launchGame(packageName)
+      .then(message => Alert.alert('Success', message))
+      .catch(error => Alert.alert('Error', error.message));
   };
 
   // Monitor network status
