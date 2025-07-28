@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "784439402438",
+    "project_id": "boostgamefaster",
+    "storage_bucket": "boostgamefaster.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:784439402438:android:c1de9bc3cccf93d0889cc7",
+        "android_client_info": {
+          "package_name": "com.boostgamefaster"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD-aZTat7SPY06_qlM1GMjrzuyGT8WMfUU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
