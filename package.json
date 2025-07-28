@@ -1,0 +1,24 @@
+{
+  "name": "boost-game-faster",
+  "version": "0.0.1",
+  "main": "index.js",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.71.8",
+    "tailwind-rn": "^4.2.0",
+    "react-native-reanimated": "^3.0.2",
+    "@react-native-community/netinfo": "^9.3.7",
+    "react-native-device-info": "^10.3.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@babel/preset-env": "^7.20.0",
+    "@babel/preset-react": "^7.18.6",
+    "metro-react-native-babel-preset": "^0.73.7"
+  }
+}
