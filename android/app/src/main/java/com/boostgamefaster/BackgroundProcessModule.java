@@ -1,10 +1,10 @@
 package com.boostgamefaster;
 
 import android.app.ActivityManager;
+import android.app.usage.UsageStatsManager;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
-
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
@@ -19,9 +19,9 @@ import java.util.List;
 public class BackgroundProcessModule extends ReactContextBaseJavaModule {
     private final ReactApplicationContext reactContext;
 
-    public BackgroundProcessModule(Context activityManager) {
+    public BackgroundProcessModule(ReactApplicationContext reactContext) {
         super(reactContext);
-        this.context = reactContext;
+        this.reactContext = reactContext;
     }
 
     @Override
@@ -32,39 +32,41 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getRunningApps(String manufacturer, Promise promise) {
         try {
-            ActivityManager activityManager = (ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
             WritableArray appList = new WritableNativeArray();
-            if (manufacturer.equalsIgnoreCase("xiaomi")) {
-                // Xiaomi workaround: Use getRunningTasks if available
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            if (manufacturer.equalsIgnoreCase("xiaomi") || manufacturer.equalsIgnoreCase("samsung")) {
+                // OEM workaround: Use UsageStatsManager for restricted devices
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    UsageStatsManager usageStatsManager = (ActivityManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
+                    long time = System.currentTimeMillis();
+                    List<UsageStats> stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 3600, time);
+                    for (UsageStats stat : stats) {
+                        if (stat.getTotalTimeInForeground() > 0) {
+                            WritableMap appInfo = new WritableNativeMap();
+                            appInfo.putString("name", stat.getPackageName());
+                            appInfo.putInt("pid", 0); // UsageStats doesn't provide PID
+                            appList.pushMap(appInfo);
+                        }
+                    }
+                } else {
+                    ActivityManager activityManager = (ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
                     List<ActivityManager.AppTasks> tasks = activityManager.getAppTasks();
-                    for (ActivityManager.AppTaskInfo task : tasks) {
+                    for (ActivityManager.AppTask task : tasks) {
                         WritableMap appInfo = new WritableNativeMap();
                         appInfo.putString("name", task.getTaskInfo().baseActivity.getPackageName());
                         appInfo.putInt("pid", task.getTaskInfo().id);
                         appList.pushMap(appInfo);
                     }
-                } else {
-                    List<ActivityManager.AppInfo> processes = activityManager.getRunningApps();
-                    for (ActivityManager.AppInfo process : processes) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && process.importance == ActivityManager.AppInfo.IMPORTANCE) {
-                            continue;
-                        }
-                        WritableMap appInfo = new WritableNativeMap();
-                        appInfo.putString("name", process.name);
-                        appInfo.putInt("pid", process.pid);
-                        appList.pushMap(appInfo);
-                    }
                 }
             } else {
-                List<ActivityManager.AppInfo> processes = activityManager.getRunningApps();
-                for (ActivityManager.AppInfo processInfo : processes) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && processInfo.importance == ActivityManager.AppInfo.IMPORTANCE) {
+                ActivityManager activityManager = (ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
+                List<ActivityManager.RunningAppProcessInfo> processes = activityManager.getRunningAppProcesses();
+                for (ActivityManager.RunningAppProcessInfo process : processes) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
                         continue;
                     }
                     WritableMap appInfo = new WritableNativeMap();
-                    appInfo.putString("name", processInfo.name);
-                    appInfo.putInt("pid", processInfo.pid);
+                    appInfo.putString("name", process.processName);
+                    appInfo.putInt("pid", process.pid);
                     appList.pushMap(appInfo);
                 }
             }
@@ -81,11 +83,27 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
             String packageName = reactContext.getPackageName();
             WritableArray closedApps = new WritableNativeArray();
 
-            if (manufacturer.equalsIgnoreCase("xiaomi")) {
-                // Xiaomi workaround
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            if (manufacturer.equalsIgnoreCase("xiaomi") || manufacturer.equalsIgnoreCase("samsung")) {
+                // OEM workaround
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    UsageStatsManager usageStatsManager = (ActivityManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
+                    long time = System.currentTimeMillis();
+                    List<UsageStats> stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 3600, time);
+                    for (UsageStats stat : stats) {
+                        if (!stat.getPackageName().equals(packageName) && stat.getTotalTimeInForeground() > 0) {
+                            try {
+                                activityManager.killBackgroundProcesses(stat.getPackageName());
+                                WritableMap appInfo = new WritableNativeMap();
+                                appInfo.putString("name", stat.getPackageName());
+                                closedApps.pushMap(appInfo);
+                            } catch (SecurityException e) {
+                                // Skip restricted apps
+                            }
+                        }
+                    }
+                } else {
                     List<ActivityManager.AppTasks> tasks = activityManager.getAppTasks();
-                    for (ActivityManager.AppTaskInfo task : tasks) {
+                    for (ActivityManager.AppTask task : tasks) {
                         String taskPackage = task.getTaskInfo().baseActivity.getPackageName();
                         if (!taskPackage.equals(packageName)) {
                             try {
@@ -95,23 +113,6 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
                                 closedApps.pushMap(appInfo);
                             } catch (SecurityException e) {
                                 // Skip restricted tasks
-                            }
-                        }
-                    }
-                } else {
-                    List<ActivityManager.RunningAppProcessInfo> processes = activityManager.getRunningAppProcesses();
-                    for (ActivityManager.RunningAppProcessInfo process : processes) {
-                        if (!process.processName.equals(packageName)) {
-                            try {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
-                                    continue;
-                                }
-                                activityManager.killBackgroundProcesses(process.processName);
-                                WritableMap appInfo = new WritableNativeMap();
-                                appInfo.putString("name", process.processName);
-                                closedApps.pushMap(appInfo);
-                            } catch (SecurityException e) {
-                                // Skip restricted apps
                             }
                         }
                     }
