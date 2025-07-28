@@ -1,13 +1,42 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, TextInput, Alert } from 'react-native';
-import { Picker } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, TextInput, Alert, Picker } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModules } from 'react-native';
+
+const { GameDetector } = NativeModules;
 
 const GameList = ({ games, updateGFX, launchGame, addManualGame }) => {
   const tailwind = useTailwind();
   const [manualGameName, setManualGameName] = useState('');
   const [manualPackageName, setManualPackageName] = useState('');
+  const [allApps, setAllApps] = useState([]);
+  const [showAppPicker, setShowAppPicker] = useState(false);
+
+  // Fetch all installed apps for manual selection
+  useEffect(() => {
+    GameDetector.getAllInstalledApps()
+      .then(apps => setAllApps(apps))
+      .catch(error => Alert.alert('Error', 'Failed to load installed apps: ' + error.message));
+  }, []);
+
+  const handleAddGame = () => {
+    if (!manualGameName || !manualPackageName) {
+      Alert.alert('Error', 'Please enter both game name and package name or select an app.');
+      return;
+    }
+    addManualGame(manualGameName, manualPackageName);
+    setManualGameName('');
+    setManualPackageName('');
+    setShowAppPicker(false);
+    Alert.alert('Success', `${manualGameName} added to game list.`);
+  };
+
+  const handleAppSelection = (app) => {
+    setManualGameName(app.name);
+    setManualPackageName(app.packageName);
+  };
 
   const renderGame = ({ item }) => (
     <Animated.View
@@ -59,17 +88,6 @@ const GameList = ({ games, updateGFX, launchGame, addManualGame }) => {
     </Animated.View>
   );
 
-  const handleAddGame = () => {
-    if (!manualGameName || !manualPackageName) {
-      Alert.alert('Error', 'Please enter both game name and package name.');
-      return;
-    }
-    addManualGame(manualGameName, manualPackageName);
-    setManualGameName('');
-    setManualPackageName('');
-    Alert.alert('Success', `${manualGameName} added to game list.`);
-  };
-
   return (
     <View style={tailwind('bg-gray-800 p-6 rounded-lg')}>
       <Text style={tailwind('text-2xl font-semibold text-white mb-4')}>
@@ -79,6 +97,31 @@ const GameList = ({ games, updateGFX, launchGame, addManualGame }) => {
         Note: Resolution and FPS settings are suggestions and may require in-game adjustments.
       </Text>
       <View style={tailwind('mb-4')}>
+        <TouchableOpacity
+          style={tailwind('bg-gray-600 p-2 rounded mb-2')}
+          onPress={() => setShowAppPicker(!showAppPicker)}
+          accessible={true}
+          accessibilityLabel="Select an app"
+        >
+          <Text style={tailwind('text-white text-center')}>
+            {manualGameName || 'Select an App'}
+          </Text>
+        </TouchableOpacity>
+        {showAppPicker && (
+          <FlatList
+            data={allApps}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={tailwind('p-2 bg-gray-700 rounded mb-1')}
+                onPress={() => handleAppSelection(item)}
+              >
+                <Text style={tailwind('text-white')}>{item.name}</Text>
+              </TouchableOpacity>
+            )}
+            keyExtractor={item => item.packageName}
+            style={tailwind('max-h-40')}
+          />
+        )}
         <TextInput
           style={tailwind('bg-gray-600 text-white p-2 rounded mb-2')}
           placeholder="Game Name"
