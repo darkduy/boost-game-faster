@@ -22,12 +22,13 @@ public class MainApplication extends Application implements ReactApplication {
                 new MainReactPackage(),
                 new BackgroundProcessPackage(),
                 new SystemSettingsPackage(),
-                new GameDetectorPackage()
+                new GameDetectorPackage(),
+                new GameModePackage()
             );
         }
 
         @Override
-        protectedDir() {
+        protected String getJSMainModuleName() {
             return "index";
         }
     };
