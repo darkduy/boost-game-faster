@@ -23,4 +23,8 @@
     <string name="onboarding_grant">Grant Permissions</string>
     <string name="add_game">Add Game Manually</string>
     <string name="gfx_note">Note: Resolution and FPS settings are suggestions and may require in-game adjustments.</string>
+    <string name="oem_restriction">Your device (%1$s) restricts some optimizations. Please enable Game Mode or clear background apps manually in Settings.</string>
+    <string name="game_mode_enabled">Game Mode enabled for %1$s.</string>
+    <string name="game_mode_error">Failed to enable Game Mode: %1$s</string>
+    <string name="select_app">Select an App</string>
 </resources>
