@@ -3,6 +3,7 @@ package com.boostgamefaster
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.os.Build
 import com.facebook.react.bridge.*
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
@@ -53,10 +54,13 @@ class GameDetectorModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
 
     private fun isGameApp(app: ApplicationInfo, pm: PackageManager): Boolean {
-        return (app.category == ApplicationInfo.CATEGORY_GAME) ||
+        val hasInternet = pm.checkPermission("android.permission.INTERNET", app.packageName) == PackageManager.PERMISSION_GRANTED
+        val hasVibrate = pm.checkPermission("android.permission.VIBRATE", app.packageName) == PackageManager.PERMISSION_GRANTED
+        return (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) app.category == ApplicationInfo.CATEGORY_GAME else false) ||
                (app.metaData?.containsKey("com.google.android.play.games") == true) ||
                app.packageName.contains("game", ignoreCase = true) ||
-               pm.getLaunchIntentForPackage(app.packageName)?.categories?.contains(Intent.CATEGORY_GAME) == true
+               pm.getLaunchIntentForPackage(app.packageName)?.categories?.contains(Intent.CATEGORY_GAME) == true ||
+               (hasInternet && hasVibrate)
     }
 
     @ReactMethod
