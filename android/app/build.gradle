@@ -1,33 +1,32 @@
-apply plugin: 'com.android.application'
-apply plugin: 'com.facebook.react'
-apply plugin: 'kotlin-android'
-apply plugin: 'com.google.firebase.crashlytics'
-
-android {
-    compileSdkVersion 33
-    defaultConfig {
-        applicationId "com.boostgamefaster"
-        minSdkVersion 21
-        targetSdkVersion 33
-        versionCode 1
-        versionName "1.0"
+buildscript {
+    ext {
+        buildToolsVersion = "33.0.0"
+        minSdkVersion = 21
+        compileSdkVersion = 33
+        targetSdkVersion = 33
     }
-    buildTypes {
-        release {
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.3.1'
+        classpath 'com.google.gms:google-services:4.3.15'
+        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.9.2'
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            url "$rootDir/../node_modules/react-native/android"
+        }
+        maven {
+            url 'https://www.jitpack.io'
         }
     }
 }
 
-dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation 'com.facebook.react:react-native:+'
-    implementation 'androidx.core:core:1.9.0'
-    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.7.10'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4'
-    implementation platform('com.google.firebase:firebase-bom:31.0.0')
-    implementation 'com.google.firebase:firebase-crashlytics'
-    implementation 'org.json:json:20210307'
-    implementation 'androidx.appcompat:appcompat:1.6.1' // For UsageStatsManager
-}
+apply plugin: 'com.google.gms.google-services'
