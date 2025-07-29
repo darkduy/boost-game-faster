@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, Alert, AccessibilityInfo, ActivityIndicator, Platform } from 'react-native';
+import { View, Text, ScrollView, Alert, AccessibilityInfo, ActivityIndicator, Platform, Linking } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import NetInfo from '@react-native-community/netinfo';
@@ -38,7 +38,7 @@ const BoostGameFaster = () => {
     { name: 'Racing Game', packageName: 'com.racing.game', status: 'Ready', resolution: '1600x900', fpsCap: '60' },
   ], []);
 
-  // Check OEM restrictions
+  // Check OEM restrictions and guide user
   useEffect(() => {
     DeviceInfo.getManufacturer().then(manufacturer => {
       setOemManufacturer(manufacturer.toLowerCase());
@@ -46,6 +46,10 @@ const BoostGameFaster = () => {
         Alert.alert(
           'Device Restriction',
           `Your device (${manufacturer}) may restrict some optimizations. Please enable Game Mode or clear background apps manually in Settings.`,
+          [
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+            { text: 'OK' }
+          ]
         );
       }
     });
@@ -55,7 +59,8 @@ const BoostGameFaster = () => {
   const checkPermissions = useCallback(async () => {
     const writeSettings = await request(PERMISSIONS.ANDROID.WRITE_SETTINGS);
     const queryPackages = await request(PERMISSIONS.ANDROID.QUERY_ALL_PACKAGES);
-    if (writeSettings !== RESULTS.GRANTED || queryPackages !== RESULTS.GRANTED) {
+    const usageStats = await request(PERMISSIONS.ANDROID.PACKAGE_USAGE_STATS);
+    if (writeSettings !== RESULTS.GRANTED || queryPackages !== RESULTS.GRANTED || usageStats !== RESULTS.GRANTED) {
       setShowOnboarding(true);
     }
     if (writeSettings !== RESULTS.GRANTED) {
@@ -63,6 +68,9 @@ const BoostGameFaster = () => {
     }
     if (queryPackages !== RESULTS.GRANTED) {
       Alert.alert('Permission Required', 'Please allow access to installed apps to detect games.');
+    }
+    if (usageStats !== RESULTS.GRANTED) {
+      Alert.alert('Permission Required', 'Please allow access to usage stats for better app detection on this device.');
     }
   }, []);
 
@@ -167,11 +175,9 @@ const BoostGameFaster = () => {
   // Launch game with Game Mode
   const launchGame = useCallback(async (packageName) => {
     try {
-      if (Platform.OS === 'android' && Platform.Version >= 33) {
-        await GameMode.enableGameMode(packageName);
-      }
+      const gameModeMessage = await GameMode.enableGameMode(packageName);
       const message = await GameDetector.launchGame(packageName);
-      Alert.alert('Success', message);
+      Alert.alert('Success', `${message} ${gameModeMessage}`);
     } catch (error) {
       firebaseCrashlytics.recordError(error);
       Alert.alert('Error', error.message);
