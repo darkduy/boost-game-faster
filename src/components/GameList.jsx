@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, TextInput, Alert, Picker } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, TextInput, Alert, Platform } from 'react-native';
+import { Picker } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -19,6 +20,14 @@ const GameList = ({ games, updateGFX, launchGame, addManualGame }) => {
     GameDetector.getAllInstalledApps()
       .then(apps => setAllApps(apps))
       .catch(error => Alert.alert('Error', 'Failed to load installed apps: ' + error.message));
+    // Inform user about Game Mode limitations
+    if (Platform.OS === 'android' && Platform.Version < 33) {
+      Alert.alert(
+        'Game Mode Notice',
+        'Game Mode is only available on Android 13+. For older devices, high performance mode (max brightness) will be used.',
+        [{ text: 'OK' }]
+      );
+    }
   }, []);
 
   const handleAddGame = () => {
