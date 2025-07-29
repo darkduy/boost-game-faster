@@ -9,6 +9,7 @@ const OnboardingScreen = ({ onComplete }) => {
   const grantPermissions = async () => {
     await request(PERMISSIONS.ANDROID.WRITE_SETTINGS);
     await request(PERMISSIONS.ANDROID.QUERY_ALL_PACKAGES);
+    await request(PERMISSIONS.ANDROID.PACKAGE_USAGE_STATS);
     await Linking.openSettings();
     onComplete();
   };
@@ -21,8 +22,11 @@ const OnboardingScreen = ({ onComplete }) => {
       <Text style={tailwind('text-white mb-4')}>
         Step 1: Grant permission to modify system settings for performance optimization.
       </Text>
-      <Text style={tailwind('text-white mb-8')}>
+      <Text style={tailwind('text-white mb-4')}>
         Step 2: Allow access to installed apps to detect games.
+      </Text>
+      <Text style={tailwind('text-white mb-8')}>
+        Step 3: Allow access to usage stats for better app detection on some devices.
       </Text>
       <TouchableOpacity
         style={tailwind('bg-blue-600 p-4 rounded-lg mx-auto')}
