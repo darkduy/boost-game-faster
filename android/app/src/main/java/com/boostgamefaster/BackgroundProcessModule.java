@@ -1,9 +1,9 @@
 package com.boostgamefaster;
 
 import android.app.ActivityManager;
+import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
@@ -36,7 +36,7 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
             if (manufacturer.equalsIgnoreCase("xiaomi") || manufacturer.equalsIgnoreCase("samsung")) {
                 // OEM workaround: Use UsageStatsManager for restricted devices
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    UsageStatsManager usageStatsManager = (ActivityManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
+                    UsageStatsManager usageStatsManager = (UsageStatsManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
                     long time = System.currentTimeMillis();
                     List<UsageStats> stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 3600, time);
                     for (UsageStats stat : stats) {
@@ -49,7 +49,7 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
                     }
                 } else {
                     ActivityManager activityManager = (ActivityManager) reactContext.getSystemService(Context.ACTIVITY_SERVICE);
-                    List<ActivityManager.AppTasks> tasks = activityManager.getAppTasks();
+                    List<ActivityManager.AppTask> tasks = activityManager.getAppTasks();
                     for (ActivityManager.AppTask task : tasks) {
                         WritableMap appInfo = new WritableNativeMap();
                         appInfo.putString("name", task.getTaskInfo().baseActivity.getPackageName());
@@ -86,7 +86,7 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
             if (manufacturer.equalsIgnoreCase("xiaomi") || manufacturer.equalsIgnoreCase("samsung")) {
                 // OEM workaround
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    UsageStatsManager usageStatsManager = (ActivityManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
+                    UsageStatsManager usageStatsManager = (UsageStatsManager) reactContext.getSystemService(Context.USAGE_STATS_SERVICE);
                     long time = System.currentTimeMillis();
                     List<UsageStats> stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 3600, time);
                     for (UsageStats stat : stats) {
@@ -102,7 +102,7 @@ public class BackgroundProcessModule extends ReactContextBaseJavaModule {
                         }
                     }
                 } else {
-                    List<ActivityManager.AppTasks> tasks = activityManager.getAppTasks();
+                    List<ActivityManager.AppTask> tasks = activityManager.getAppTasks();
                     for (ActivityManager.AppTask task : tasks) {
                         String taskPackage = task.getTaskInfo().baseActivity.getPackageName();
                         if (!taskPackage.equals(packageName)) {
