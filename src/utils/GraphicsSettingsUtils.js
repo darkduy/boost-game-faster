@@ -1,3 +1,6 @@
+import { Linking } from 'react-native';
+
+// Utility for graphics settings validation and permission handling
 export const GraphicsSettingsUtils = {
   // Default graphics settings
   getDefaultSettings: () => ({
@@ -22,16 +25,30 @@ export const GraphicsSettingsUtils = {
     };
   },
 
-  // Handle permission errors
+  // Handle permission errors with detailed messages
   handlePermissionError: (error, Linking, Alert) => {
-    if (error.includes('PERMISSION_DENIED')) {
-      Alert.alert(
-        'Permission Required',
-        'Please allow overlay, notification, and settings permissions for BoostMode.',
-        [{ text: 'OK', onPress: () => Linking.openSettings() }]
-      );
-    } else {
-      Alert.alert('Error', `Failed to enable BoostMode: ${error}`);
+    let message = 'Unknown error';
+    let action = () => {};
+
+    if (error.includes('Overlay permission')) {
+      message = 'Overlay permission is required to display FPS/ping. Please enable it in Settings.';
+      action = () => Linking.openSettings();
+    } else if (error.includes('Usage stats permission')) {
+      message = 'Usage stats permission is required to optimize performance. Please enable it in Settings.';
+      action = () => Linking.openURL('android.settings.USAGE_ACCESS_SETTINGS');
+    } else if (error.includes('Write settings permission')) {
+      message = 'Write settings permission is required to adjust brightness. Please enable it in Settings.';
+      action = () => Linking.openURL('android.settings.action.MANAGE_WRITE_SETTINGS');
+    } else if (error.includes('Notification policy permission')) {
+      message = 'Notification policy permission is required for Do Not Disturb mode. Please enable it in Settings.';
+      action = () => Linking.openURL('android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS');
+    } else if (error.includes('Rooted device')) {
+      message = 'Rooted devices are not supported for security reasons.';
     }
+
+    Alert.alert('Permission Error', message, [
+      { text: 'OK', onPress: action },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   },
 };
