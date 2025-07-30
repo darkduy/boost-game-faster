@@ -5,6 +5,9 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
 import android.widget.TextView
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -77,6 +80,34 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 resetGraphicsSettings()
 
                 callback.invoke(null, "BoostMode disabled")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Suggests optimal graphics settings based on device performance.
+     * @param callback Callback to return suggested settings
+     */
+    @ReactMethod
+    fun suggestGraphicsSettings(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val memoryInfo = ActivityManager.MemoryInfo()
+                activityManager.getMemoryInfo(memoryInfo)
+                val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
+                val availRam = memoryInfo.availMem / (1024 * 1024) // MB
+                val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
+
+                val suggestedSettings = mapOf(
+                    "resolution" to if (ramUsage > 70) "low" else "medium",
+                    "texture" to if (ramUsage > 70) "low" else "medium",
+                    "effects" to if (ramUsage > 70) "off" else "low",
+                    "fpsLimit" to if (ramUsage > 60) "30" else "60"
+                )
+                callback.invoke(null, suggestedSettings)
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
@@ -217,7 +248,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Shows FPS and ping overlay on screen.
+     * Shows FPS and ping overlay on screen with drag functionality.
      */
     private fun showOverlay() {
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -236,16 +267,44 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
                 WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {
-            x = 0
-            y = 0
+            x = sharedPrefs.getInt("overlayX", 0)
+            y = sharedPrefs.getInt("overlayY", 0)
+        }
+
+        // Add drag functionality
+        var initialX = 0f
+        var initialY = 0f
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        overlayView?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x.toFloat()
+                    initialY = params.y.toFloat()
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    params.x = (initialX + (event.rawX - initialTouchX)).toInt()
+                    params.y = (initialY + (event.rawY - initialTouchY)).toInt()
+                    windowManager.updateViewLayout(overlayView, params)
+                    sharedPrefs.edit()
+                        .putInt("overlayX", params.x)
+                        .putInt("overlayY", params.y)
+                        .apply()
+                    true
+                }
+                else -> false
+            }
         }
 
         windowManager.addView(overlayView, params)
 
-        // Update FPS/Ping overlay less frequently
+        // Update FPS/Ping overlay
         coroutineScope.launch {
             var fps = 0
             while (overlayView != null) {
@@ -254,7 +313,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 withContext(Dispatchers.Main) {
                     overlayView?.text = "FPS: $fps | Ping: ${ping}ms"
                 }
-                delay(2000) // Reduced update frequency
+                kotlinx.coroutines.delay(2000)
             }
         }
     }
