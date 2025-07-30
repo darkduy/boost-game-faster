@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, memo } from 'react';
 import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter, TouchableOpacity, Linking } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
@@ -13,7 +13,8 @@ import { GraphicsSettingsUtils } from './utils/GraphicsSettingsUtils';
 // Native modules
 const { GameDetector, BackgroundProcess, SystemSettings, BoostMode } = NativeModules;
 
-const App = () => {
+// Memoized component to prevent unnecessary re-renders
+const App = memo(() => {
   const tailwind = useTailwind();
   const [games, setGames] = useState([]);
   const [systemStatus, setSystemStatus] = useState({
@@ -30,26 +31,37 @@ const App = () => {
   const [boostModeEnabled, setBoostModeEnabled] = useState(false);
   const [graphicsSettings, setGraphicsSettings] = useState(GraphicsSettingsUtils.getDefaultSettings());
 
-  // Initialize app: load onboarding, device info, games, and system settings
+  // Initialize app: load onboarding, device info, cached games, and system settings
   useEffect(() => {
     const initializeApp = async () => {
       try {
+        // Check onboarding status
         const onboardingStatus = await AsyncStorage.getItem('onboardingComplete');
         if (onboardingStatus === 'true') {
           setIsOnboardingComplete(true);
         }
 
+        // Load cached games
+        const cachedGames = await AsyncStorage.getItem('cachedGames');
+        if (cachedGames) {
+          setGames(JSON.parse(cachedGames));
+        }
+
+        // Load device info
         const deviceInfo = await NativeModules.DeviceInfo.getDeviceInfo();
         setManufacturer(deviceInfo.manufacturer || 'unknown');
 
+        // Load games asynchronously
         GameDetector.getInstalledGames((error, detectedGames) => {
           if (error) {
             Alert.alert('Error', `Failed to detect games: ${error}`);
             return;
           }
           setGames(detectedGames || []);
+          AsyncStorage.setItem('cachedGames', JSON.stringify(detectedGames || []));
         });
 
+        // Enable high performance mode
         SystemSettings.enableHighPerformanceMode((error) => {
           if (error && error.includes('PERMISSION_DENIED')) {
             Alert.alert(
@@ -60,16 +72,22 @@ const App = () => {
           }
         });
 
+        // Listen for system status updates
         const eventEmitter = new NativeEventEmitter(GameDetector);
         eventEmitter.addListener('GameStatusUpdate', (status) => {
-          setSystemStatus({
-            cpuUsage: status.cpuUsage || 0,
-            ramUsage: status.ramUsage || 0,
-            fps: status.fps || 0,
-            ping: status.ping || 0,
+          setSystemStatus((prev) => {
+            const newStatus = {
+              cpuUsage: status.cpuUsage || prev.cpuUsage,
+              ramUsage: status.ramUsage || prev.ramUsage,
+              fps: status.fps || prev.fps,
+              ping: status.ping || prev.ping,
+            };
+            AsyncStorage.setItem('systemStatus', JSON.stringify(newStatus));
+            return newStatus;
           });
         });
 
+        // Monitor network state
         const unsubscribe = NetInfo.addEventListener((state) => {
           setNetworkState({
             isConnected: state.isConnected,
@@ -77,7 +95,7 @@ const App = () => {
           });
         });
 
-        setTimeout(() => setIsLoading(false), 2000);
+        setTimeout(() => setIsLoading(false), 1000); // Reduced loading time
         return () => unsubscribe();
       } catch (e) {
         Alert.alert('Error', `Failed to initialize app: ${e.message}`);
@@ -89,7 +107,7 @@ const App = () => {
   }, []);
 
   // Optimize game performance
-  const optimizeGame = (game) => {
+  const optimizeGame = useCallback((game) => {
     BackgroundProcess.closeBackgroundApps(manufacturer, (error, closedApps) => {
       if (error) {
         GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
@@ -97,10 +115,10 @@ const App = () => {
       }
       Alert.alert('Success', `Optimized ${game.name}. Closed ${closedApps.length} background apps.`);
     });
-  };
+  }, [manufacturer]);
 
   // Toggle BoostMode
-  const toggleBoostMode = () => {
+  const toggleBoostMode = useCallback(() => {
     if (boostModeEnabled) {
       BoostMode.disableBoostMode((error) => {
         if (error) {
@@ -121,12 +139,12 @@ const App = () => {
         Alert.alert('Success', 'BoostMode enabled with custom graphics settings. Swipe from left to view FPS/ping overlay.');
       });
     }
-  };
+  }, [boostModeEnabled, graphicsSettings]);
 
   // Update graphics settings
-  const updateGraphicsSetting = (key, value) => {
+  const updateGraphicsSetting = useCallback((key, value) => {
     setGraphicsSettings((prev) => GraphicsSettingsUtils.validateSettings({ ...prev, [key]: value }));
-  };
+  }, []);
 
   // Render loading screen
   if (isLoading) {
@@ -224,6 +242,6 @@ const App = () => {
       <GameList games={games} optimizeGame={optimizeGame} graphicsSettings={graphicsSettings} />
     </View>
   );
-};
+});
 
 export default App;
