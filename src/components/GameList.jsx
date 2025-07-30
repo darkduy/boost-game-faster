@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, Alert, TextInput } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SecurityUtils } from '../utils/SecurityUtils';
 import { GraphicsSettingsUtils } from '../utils/GraphicsSettingsUtils';
 
 // Native modules
@@ -15,20 +15,23 @@ const GameList = memo(({ games, optimizeGame, graphicsSettings, isDarkMode }) =>
   // Filter games by name or genre
   const filteredGames = games.filter(
     (game) =>
-      game.name.toLowerCase().includes(filter.toLowerCase()) ||
-      (game.genre && game.genre.toLowerCase().includes(filter.toLowerCase()))
+      game.name.toLowerCase().includes(SecurityUtils.sanitizeInput(filter.toLowerCase())) ||
+      (game.genre && game.genre.toLowerCase().includes(SecurityUtils.sanitizeInput(filter.toLowerCase())))
   );
 
   // Save game-specific BoostMode settings
   const saveGameSettings = useCallback(
     async (game, settings) => {
       try {
-        const gameSettings = await AsyncStorage.getItem('gameSettings');
-        const settingsMap = gameSettings ? JSON.parse(gameSettings) : {};
-        settingsMap[game.packageName] = settings;
-        await AsyncStorage.setItem('gameSettings', JSON.stringify(settingsMap));
+        const sanitizedSettings = {
+          resolution: SecurityUtils.sanitizeInput(settings.resolution),
+          texture: SecurityUtils.sanitizeInput(settings.texture),
+          effects: SecurityUtils.sanitizeInput(settings.effects),
+          fpsLimit: SecurityUtils.sanitizeInput(settings.fpsLimit),
+        };
+        await SecurityUtils.storeSecureData(`gameSettings_${game.packageName}`, sanitizedSettings);
       } catch (e) {
-        Alert.alert('Error', `Failed to save settings for ${game.name}: ${e.message}`);
+        Alert.alert('Error', `Failed to save settings for ${SecurityUtils.sanitizeInput(game.name)}: ${e.message}`);
       }
     },
     []
@@ -45,7 +48,7 @@ const GameList = memo(({ games, optimizeGame, graphicsSettings, isDarkMode }) =>
         }
         optimizeGame(game);
         saveGameSettings(game, validatedSettings);
-        Alert.alert('Success', `BoostMode enabled for ${game.name} with custom graphics settings. Swipe from left to view FPS/ping.`);
+        Alert.alert('Success', `BoostMode enabled for ${SecurityUtils.sanitizeInput(game.name)} with custom graphics settings. Swipe from left to view FPS/ping.`);
       });
     },
     [graphicsSettings, optimizeGame, saveGameSettings]
@@ -59,7 +62,7 @@ const GameList = memo(({ games, optimizeGame, graphicsSettings, isDarkMode }) =>
         onPress={() => startGameWithBoostMode(item)}
       >
         <Text style={tailwind(`text-lg ${isDarkMode ? 'text-white' : 'text-black'}`)}>
-          {item.name} {item.genre ? `(${item.genre})` : ''}
+          {SecurityUtils.sanitizeInput(item.name)} {item.genre ? `(${SecurityUtils.sanitizeInput(item.genre)})` : ''}
         </Text>
       </TouchableOpacity>
     ),
@@ -74,7 +77,7 @@ const GameList = memo(({ games, optimizeGame, graphicsSettings, isDarkMode }) =>
         placeholder="Filter by name or genre"
         placeholderTextColor={isDarkMode ? '#aaa' : '#666'}
         value={filter}
-        onChangeText={setFilter}
+        onChangeText={(text) => setFilter(SecurityUtils.sanitizeInput(text))}
       />
       {filteredGames.length === 0 ? (
         <Text style={tailwind(`text-gray-400 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>No games found</Text>
