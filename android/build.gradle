@@ -4,15 +4,15 @@ buildscript {
         minSdkVersion = 21
         compileSdkVersion = 33
         targetSdkVersion = 33
+        kotlinVersion = "1.6.21"
     }
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:7.3.1'
-        classpath 'com.google.gms:google-services:4.3.15'
-        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.9.2'
+        classpath("com.android.tools.build:gradle:8.1.0")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     }
 }
 
@@ -20,13 +20,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven {
-            url "$rootDir/../node_modules/react-native/android"
-        }
-        maven {
-            url 'https://www.jitpack.io'
-        }
+        maven { url 'https://www.jitpack.io' }
     }
 }
-
-apply plugin: 'com.google.gms.google-services'
