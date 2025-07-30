@@ -55,7 +55,7 @@ const App = memo(() => {
           setIsOnboardingComplete(true);
         }
 
-        // Load cached games
+        // Load cached games (including manually added apps)
         const cachedGames = await SecurityUtils.getSecureData('cachedGames');
         if (cachedGames) {
           setGames(cachedGames);
@@ -77,8 +77,8 @@ const App = memo(() => {
             packageName: SecurityUtils.sanitizeInput(game.packageName),
             genre: SecurityUtils.sanitizeInput(game.genre),
           }));
-          setGames(sanitizedGames);
           SecurityUtils.storeSecureData('cachedGames', sanitizedGames);
+          setGames(sanitizedGames);
         });
 
         // Enable high performance mode
@@ -132,7 +132,7 @@ const App = memo(() => {
     initializeApp();
   }, []);
 
-  // Optimize game performance
+  // Optimize game or app performance
   const optimizeGame = useCallback((game) => {
     BackgroundProcess.closeBackgroundApps(manufacturer, (error, closedApps) => {
       if (error) {
@@ -288,6 +288,7 @@ const App = memo(() => {
       />
       <GameList
         games={games}
+        setGames={setGames} // Pass setGames to update list
         optimizeGame={optimizeGame}
         graphicsSettings={graphicsSettings}
         isDarkMode={isDarkMode}
