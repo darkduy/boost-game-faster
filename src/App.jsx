@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter, TouchableOpacity, Linking } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import NetInfo from '@react-native-community/netinfo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import GameList from './components/GameList';
 import SystemStatus from './components/SystemStatus';
 import NetworkOptimizer from './components/NetworkOptimizer';
 import OnboardingScreen from './screens/OnboardingScreen';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { GraphicsSettingsUtils } from './utils/GraphicsSettingsUtils';
 
-const { GameDetector, BackgroundProcess, SystemSettings, GameTurbo } = NativeModules;
+// Native modules
+const { GameDetector, BackgroundProcess, SystemSettings, BoostMode } = NativeModules;
 
 const App = () => {
   const tailwind = useTailwind();
@@ -24,8 +27,10 @@ const App = () => {
   const [networkState, setNetworkState] = useState({ isConnected: false, type: '' });
   const [vpnServer, setVpnServer] = useState('Auto');
   const [manufacturer, setManufacturer] = useState('');
-  const [gameTurboEnabled, setGameTurboEnabled] = useState(false);
+  const [boostModeEnabled, setBoostModeEnabled] = useState(false);
+  const [graphicsSettings, setGraphicsSettings] = useState(GraphicsSettingsUtils.getDefaultSettings());
 
+  // Initialize app: load onboarding, device info, games, and system settings
   useEffect(() => {
     const initializeApp = async () => {
       try {
@@ -39,13 +44,13 @@ const App = () => {
 
         GameDetector.getInstalledGames((error, detectedGames) => {
           if (error) {
-            Alert.alert('Error', 'Failed to detect games: ' + error);
+            Alert.alert('Error', `Failed to detect games: ${error}`);
             return;
           }
           setGames(detectedGames || []);
         });
 
-        SystemSettings.enableHighPerformanceMode((error, message) => {
+        SystemSettings.enableHighPerformanceMode((error) => {
           if (error && error.includes('PERMISSION_DENIED')) {
             Alert.alert(
               'Permission Required',
@@ -75,7 +80,7 @@ const App = () => {
         setTimeout(() => setIsLoading(false), 2000);
         return () => unsubscribe();
       } catch (e) {
-        Alert.alert('Error', 'Failed to initialize app: ' + e.message);
+        Alert.alert('Error', `Failed to initialize app: ${e.message}`);
         setIsLoading(false);
       }
     };
@@ -83,54 +88,47 @@ const App = () => {
     initializeApp();
   }, []);
 
+  // Optimize game performance
   const optimizeGame = (game) => {
     BackgroundProcess.closeBackgroundApps(manufacturer, (error, closedApps) => {
       if (error) {
-        if (error.includes('PERMISSION_DENIED')) {
-          Alert.alert(
-            'Permission Required',
-            'Please allow access to usage stats to optimize performance.',
-            [{ text: 'OK', onPress: () => Linking.openSettings() }]
-          );
-        } else {
-          Alert.alert('Error', 'Failed to optimize: ' + error);
-        }
+        GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
         return;
       }
       Alert.alert('Success', `Optimized ${game.name}. Closed ${closedApps.length} background apps.`);
     });
   };
 
-  const toggleGameTurbo = () => {
-    if (gameTurboEnabled) {
-      GameTurbo.disableGameTurbo((error) => {
+  // Toggle BoostMode
+  const toggleBoostMode = () => {
+    if (boostModeEnabled) {
+      BoostMode.disableBoostMode((error) => {
         if (error) {
-          Alert.alert('Error', 'Failed to disable Game Turbo: ' + error);
+          GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
           return;
         }
-        setGameTurboEnabled(false);
-        Alert.alert('Success', 'Game Turbo disabled.');
+        setBoostModeEnabled(false);
+        Alert.alert('Success', 'BoostMode disabled.');
       });
     } else {
-      GameTurbo.enableGameTurbo((error) => {
+      const validatedSettings = GraphicsSettingsUtils.validateSettings(graphicsSettings);
+      BoostMode.enableBoostMode(validatedSettings, (error) => {
         if (error) {
-          if (error.includes('PERMISSION_DENIED')) {
-            Alert.alert(
-              'Permission Required',
-              'Please allow overlay and notification permissions for Game Turbo.',
-              [{ text: 'OK', onPress: () => Linking.openSettings() }]
-            );
-          } else {
-            Alert.alert('Error', 'Failed to enable Game Turbo: ' + error);
-          }
+          GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
           return;
         }
-        setGameTurboEnabled(true);
-        Alert.alert('Success', 'Game Turbo enabled. Swipe from left to view FPS/ping overlay.');
+        setBoostModeEnabled(true);
+        Alert.alert('Success', 'BoostMode enabled with custom graphics settings. Swipe from left to view FPS/ping overlay.');
       });
     }
   };
 
+  // Update graphics settings
+  const updateGraphicsSetting = (key, value) => {
+    setGraphicsSettings((prev) => GraphicsSettingsUtils.validateSettings({ ...prev, [key]: value }));
+  };
+
+  // Render loading screen
   if (isLoading) {
     return (
       <View style={tailwind('flex-1 justify-center items-center bg-gray-900')}>
@@ -140,6 +138,7 @@ const App = () => {
     );
   }
 
+  // Render onboarding screen
   if (!isOnboardingComplete) {
     return (
       <OnboardingScreen
@@ -151,17 +150,70 @@ const App = () => {
     );
   }
 
+  // Render main UI
   return (
     <View style={tailwind('flex-1 bg-gray-900 p-4')}>
       <Text style={tailwind('text-3xl font-bold text-white mb-6')}>Boost Game Faster</Text>
       <TouchableOpacity
-        style={tailwind(`p-3 rounded-lg ${gameTurboEnabled ? 'bg-red-500' : 'bg-green-500'}`)}
-        onPress={toggleGameTurbo}
+        style={tailwind(`p-3 rounded-lg ${boostModeEnabled ? 'bg-red-500' : 'bg-green-500'}`)}
+        onPress={toggleBoostMode}
       >
         <Text style={tailwind('text-white text-center font-bold')}>
-          {gameTurboEnabled ? 'Disable Game Turbo' : 'Enable Game Turbo'}
+          {boostModeEnabled ? 'Disable BoostMode' : 'Enable BoostMode'}
         </Text>
       </TouchableOpacity>
+      {boostModeEnabled && (
+        <View style={tailwind('bg-gray-800 p-4 rounded-lg mt-4')}>
+          <Text style={tailwind('text-white text-lg mb-2')}>Graphics Settings</Text>
+          <View style={tailwind('mb-2')}>
+            <Text style={tailwind('text-white')}>Resolution</Text>
+            <Picker
+              selectedValue={graphicsSettings.resolution}
+              style={tailwind('text-white bg-gray-700 rounded')}
+              onValueChange={(value) => updateGraphicsSetting('resolution', value)}
+            >
+              <Picker.Item label="Default" value="default" />
+              <Picker.Item label="Low (480p)" value="low" />
+              <Picker.Item label="Medium (720p)" value="medium" />
+            </Picker>
+          </View>
+          <View style={tailwind('mb-2')}>
+            <Text style={tailwind('text-white')}>Texture Quality</Text>
+            <Picker
+              selectedValue={graphicsSettings.texture}
+              style={tailwind('text-white bg-gray-700 rounded')}
+              onValueChange={(value) => updateGraphicsSetting('texture', value)}
+            >
+              <Picker.Item label="Low" value="low" />
+              <Picker.Item label="Medium" value="medium" />
+              <Picker.Item label="High" value="high" />
+            </Picker>
+          </View>
+          <View style={tailwind('mb-2')}>
+            <Text style={tailwind('text-white')}>Effects</Text>
+            <Picker
+              selectedValue={graphicsSettings.effects}
+              style={tailwind('text-white bg-gray-700 rounded')}
+              onValueChange={(value) => updateGraphicsSetting('effects', value)}
+            >
+              <Picker.Item label="Off" value="off" />
+              <Picker.Item label="Low" value="low" />
+              <Picker.Item label="Medium" value="medium" />
+            </Picker>
+          </View>
+          <View style={tailwind('mb-2')}>
+            <Text style={tailwind('text-white')}>FPS Limit</Text>
+            <Picker
+              selectedValue={graphicsSettings.fpsLimit}
+              style={tailwind('text-white bg-gray-700 rounded')}
+              onValueChange={(value) => updateGraphicsSetting('fpsLimit', value)}
+            >
+              <Picker.Item label="30 FPS" value="30" />
+              <Picker.Item label="60 FPS" value="60" />
+            </Picker>
+          </View>
+        </View>
+      )}
       <SystemStatus systemStatus={systemStatus} />
       <NetworkOptimizer
         vpnServer={vpnServer}
@@ -169,7 +221,7 @@ const App = () => {
         ping={systemStatus.ping}
         networkState={networkState}
       />
-      <GameList games={games} optimizeGame={optimizeGame} />
+      <GameList games={games} optimizeGame={optimizeGame} graphicsSettings={graphicsSettings} />
     </View>
   );
 };
