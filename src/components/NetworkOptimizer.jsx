@@ -1,57 +1,31 @@
-import React, { useState, useCallback } from 'react';
+import React, { memo, useCallback } from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
+import { SecurityUtils } from '../utils/SecurityUtils';
 
-// Simulate network speed test (Android 9 lacks direct API)
-const simulateNetworkSpeedTest = () => {
-  // Simulate download speed between 1-50 Mbps
-  const downloadSpeed = Math.floor(Math.random() * (50 - 1 + 1)) + 1;
-  return downloadSpeed;
-};
-
-const NetworkOptimizer = ({ vpnServer, setVpnServer, ping, networkState, isDarkMode }) => {
+// Memoized component to prevent unnecessary re-renders
+const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, isDarkMode }) => {
   const tailwind = useTailwind();
-  const [networkSpeed, setNetworkSpeed] = useState(null);
 
-  // Run network speed test
-  const runNetworkSpeedTest = useCallback(() => {
-    const speed = simulateNetworkSpeedTest();
-    setNetworkSpeed(speed);
-    Alert.alert('Network Speed Test', `Download Speed: ${speed} Mbps`);
-    if (speed < 10) {
-      Alert.alert('Recommendation', 'Consider switching to a faster VPN server.');
-    }
-  }, []);
+  // Simulate VPN connection (Android 9 lacks native VPN API)
+  const connectToVpn = useCallback(() => {
+    Alert.alert('VPN Connection', `Connected to ${SecurityUtils.sanitizeInput(vpnServer)} server.`);
+  }, [vpnServer]);
 
   return (
-    <View style={tailwind(`bg-gray-800 p-4 rounded-lg my-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}>
-      <Text style={tailwind(`text-white text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>
-        Network Optimizer
+    <View style={tailwind(`bg-gray-800 p-4 rounded-lg mb-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}>
+      <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Network Optimizer</Text>
+      <Text style={tailwind(`text-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
+        Network: {networkState.isConnected ? SecurityUtils.sanitizeInput(networkState.type) : 'Disconnected'}
+        {ping > 0 && ` | Ping: ${ping}ms`}
       </Text>
-      <Text style={tailwind(`text-gray-400 mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
-        Connection: {networkState.isConnected ? networkState.type : 'Disconnected'}
-      </Text>
-      <Text style={tailwind(`text-gray-400 mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
-        Ping: {ping} ms
-      </Text>
-      {networkSpeed && (
-        <Text style={tailwind(`text-gray-400 mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
-          Download Speed: {networkSpeed} Mbps
-        </Text>
-      )}
-      <TouchableOpacity
-        style={tailwind('bg-blue-500 p-2 rounded-lg mb-2')}
-        onPress={runNetworkSpeedTest}
-      >
-        <Text style={tailwind('text-white text-center')}>Test Network Speed</Text>
-      </TouchableOpacity>
-      <View>
+      <View style={tailwind('mb-2')}>
         <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>VPN Server</Text>
         <Picker
           selectedValue={vpnServer}
-          style={tailwind(`text-white bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
-          onValueChange={(value) => setVpnServer(value)}
+          style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
+          onValueChange={(value) => setVpnServer(SecurityUtils.sanitizeInput(value))}
         >
           <Picker.Item label="Auto" value="Auto" />
           <Picker.Item label="Singapore" value="Singapore" />
@@ -59,8 +33,14 @@ const NetworkOptimizer = ({ vpnServer, setVpnServer, ping, networkState, isDarkM
           <Picker.Item label="Japan" value="Japan" />
         </Picker>
       </View>
+      <TouchableOpacity
+        style={tailwind('bg-green-500 p-2 rounded-lg')}
+        onPress={connectToVpn}
+      >
+        <Text style={tailwind('text-white text-center font-bold')}>Connect VPN</Text>
+      </TouchableOpacity>
     </View>
   );
-};
+});
 
 export default NetworkOptimizer;
