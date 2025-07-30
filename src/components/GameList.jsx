@@ -1,35 +1,42 @@
-import React from 'react';
-import { View, Text, FlatList, TouchableOpacity, Alert, NativeModules } from 'react-native';
+import React, { memo, useCallback } from 'react';
+import { View, Text, FlatList, TouchableOpacity, Alert } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
 import { GraphicsSettingsUtils } from '../utils/GraphicsSettingsUtils';
 
 // Native modules
 const { BoostMode } = NativeModules;
 
-const GameList = ({ games, optimizeGame, graphicsSettings }) => {
+// Memoized component to prevent unnecessary re-renders
+const GameList = memo(({ games, optimizeGame, graphicsSettings }) => {
   const tailwind = useTailwind();
 
   // Start game with BoostMode and optimized graphics settings
-  const startGameWithBoostMode = (game) => {
-    const validatedSettings = GraphicsSettingsUtils.validateSettings(graphicsSettings);
-    BoostMode.enableBoostMode(validatedSettings, (error) => {
-      if (error) {
-        GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
-        return;
-      }
-      optimizeGame(game);
-      Alert.alert('Success', `BoostMode enabled for ${game.name} with custom graphics settings. Swipe from left to view FPS/ping.`);
-    });
-  };
+  const startGameWithBoostMode = useCallback(
+    (game) => {
+      const validatedSettings = GraphicsSettingsUtils.validateSettings(graphicsSettings);
+      BoostMode.enableBoostMode(validatedSettings, (error) => {
+        if (error) {
+          GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
+          return;
+        }
+        optimizeGame(game);
+        Alert.alert('Success', `BoostMode enabled for ${game.name} with custom graphics settings. Swipe from left to view FPS/ping.`);
+      });
+    },
+    [graphicsSettings, optimizeGame]
+  );
 
   // Render individual game item
-  const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={tailwind('bg-gray-800 p-4 mb-2 rounded-lg')}
-      onPress={() => startGameWithBoostMode(item)}
-    >
-      <Text style={tailwind('text-white text-lg')}>{item.name}</Text>
-    </TouchableOpacity>
+  const renderItem = useCallback(
+    ({ item }) => (
+      <TouchableOpacity
+        style={tailwind('bg-gray-800 p-4 mb-2 rounded-lg')}
+        onPress={() => startGameWithBoostMode(item)}
+      >
+        <Text style={tailwind('text-white text-lg')}>{item.name}</Text>
+      </TouchableOpacity>
+    ),
+    [startGameWithBoostMode]
   );
 
   return (
@@ -42,10 +49,12 @@ const GameList = ({ games, optimizeGame, graphicsSettings }) => {
           data={games}
           renderItem={renderItem}
           keyExtractor={(item) => item.packageName}
+          initialNumToRender={10} // Optimize initial render
+          maxToRenderPerBatch={10} // Optimize scrolling
         />
       )}
     </View>
   );
-};
+});
 
 export default GameList;
