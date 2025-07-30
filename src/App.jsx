@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, memo } from 'react';
-import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter, TouchableOpacity, Linking } from 'react-native';
+import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter, TouchableOpacity, Linking, Appearance } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import NetInfo from '@react-native-community/netinfo';
@@ -9,6 +9,7 @@ import SystemStatus from './components/SystemStatus';
 import NetworkOptimizer from './components/NetworkOptimizer';
 import OnboardingScreen from './screens/OnboardingScreen';
 import { GraphicsSettingsUtils } from './utils/GraphicsSettingsUtils';
+import { DeviceMonitor } from './utils/DeviceMonitor';
 
 // Native modules
 const { GameDetector, BackgroundProcess, SystemSettings, BoostMode } = NativeModules;
@@ -22,6 +23,7 @@ const App = memo(() => {
     ramUsage: 0,
     fps: 0,
     ping: 0,
+    temperature: DeviceMonitor.getSimulatedTemperature(),
   });
   const [isOnboardingComplete, setIsOnboardingComplete] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -30,6 +32,7 @@ const App = memo(() => {
   const [manufacturer, setManufacturer] = useState('');
   const [boostModeEnabled, setBoostModeEnabled] = useState(false);
   const [graphicsSettings, setGraphicsSettings] = useState(GraphicsSettingsUtils.getDefaultSettings());
+  const [isDarkMode, setIsDarkMode] = useState(Appearance.getColorScheme() === 'dark');
 
   // Initialize app: load onboarding, device info, cached games, and system settings
   useEffect(() => {
@@ -81,22 +84,32 @@ const App = memo(() => {
               ramUsage: status.ramUsage || prev.ramUsage,
               fps: status.fps || prev.fps,
               ping: status.ping || prev.ping,
+              temperature: DeviceMonitor.getSimulatedTemperature(),
             };
+            DeviceMonitor.checkPerformance(newStatus, Alert);
             AsyncStorage.setItem('systemStatus', JSON.stringify(newStatus));
             return newStatus;
           });
         });
 
         // Monitor network state
-        const unsubscribe = NetInfo.addEventListener((state) => {
+        const unsubscribeNet = NetInfo.addEventListener((state) => {
           setNetworkState({
             isConnected: state.isConnected,
             type: state.type,
           });
         });
 
-        setTimeout(() => setIsLoading(false), 1000); // Reduced loading time
-        return () => unsubscribe();
+        // Monitor dark mode changes
+        const appearanceSubscription = Appearance.addChangeListener(({ colorScheme }) => {
+          setIsDarkMode(colorScheme === 'dark');
+        });
+
+        setTimeout(() => setIsLoading(false), 1000);
+        return () => {
+          unsubscribeNet();
+          appearanceSubscription.remove();
+        };
       } catch (e) {
         Alert.alert('Error', `Failed to initialize app: ${e.message}`);
         setIsLoading(false);
@@ -146,12 +159,24 @@ const App = memo(() => {
     setGraphicsSettings((prev) => GraphicsSettingsUtils.validateSettings({ ...prev, [key]: value }));
   }, []);
 
+  // Auto-suggest graphics settings based on device capability
+  const suggestGraphicsSettings = useCallback(() => {
+    const suggestedSettings = {
+      resolution: systemStatus.ramUsage > 70 ? 'low' : 'medium',
+      texture: systemStatus.ramUsage > 70 ? 'low' : 'medium',
+      effects: systemStatus.cpuUsage > 70 ? 'off' : 'low',
+      fpsLimit: systemStatus.temperature > 40 ? '30' : '60',
+    };
+    setGraphicsSettings(GraphicsSettingsUtils.validateSettings(suggestedSettings));
+    Alert.alert('Suggested Settings', 'Graphics settings updated based on device performance.');
+  }, [systemStatus]);
+
   // Render loading screen
   if (isLoading) {
     return (
-      <View style={tailwind('flex-1 justify-center items-center bg-gray-900')}>
-        <ActivityIndicator size="large" color="#ffffff" />
-        <Text style={tailwind('text-white text-lg mt-4')}>Loading...</Text>
+      <View style={tailwind(`flex-1 justify-center items-center ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`)}>
+        <ActivityIndicator size="large" color={isDarkMode ? '#ffffff' : '#000000'} />
+        <Text style={tailwind(`text-lg mt-4 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Loading...</Text>
       </View>
     );
   }
@@ -170,8 +195,10 @@ const App = memo(() => {
 
   // Render main UI
   return (
-    <View style={tailwind('flex-1 bg-gray-900 p-4')}>
-      <Text style={tailwind('text-3xl font-bold text-white mb-6')}>Boost Game Faster</Text>
+    <View style={tailwind(`flex-1 p-4 ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`)}>
+      <Text style={tailwind(`text-3xl font-bold mb-6 ${isDarkMode ? 'text-white' : 'text-black'}`)}>
+        Boost Game Faster
+      </Text>
       <TouchableOpacity
         style={tailwind(`p-3 rounded-lg ${boostModeEnabled ? 'bg-red-500' : 'bg-green-500'}`)}
         onPress={toggleBoostMode}
@@ -181,13 +208,19 @@ const App = memo(() => {
         </Text>
       </TouchableOpacity>
       {boostModeEnabled && (
-        <View style={tailwind('bg-gray-800 p-4 rounded-lg mt-4')}>
-          <Text style={tailwind('text-white text-lg mb-2')}>Graphics Settings</Text>
+        <View style={tailwind(`bg-gray-800 p-4 rounded-lg mt-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}>
+          <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Graphics Settings</Text>
+          <TouchableOpacity
+            style={tailwind('bg-blue-500 p-2 rounded-lg mb-2')}
+            onPress={suggestGraphicsSettings}
+          >
+            <Text style={tailwind('text-white text-center')}>Suggest Optimal Settings</Text>
+          </TouchableOpacity>
           <View style={tailwind('mb-2')}>
-            <Text style={tailwind('text-white')}>Resolution</Text>
+            <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>Resolution</Text>
             <Picker
               selectedValue={graphicsSettings.resolution}
-              style={tailwind('text-white bg-gray-700 rounded')}
+              style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
               onValueChange={(value) => updateGraphicsSetting('resolution', value)}
             >
               <Picker.Item label="Default" value="default" />
@@ -196,10 +229,10 @@ const App = memo(() => {
             </Picker>
           </View>
           <View style={tailwind('mb-2')}>
-            <Text style={tailwind('text-white')}>Texture Quality</Text>
+            <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>Texture Quality</Text>
             <Picker
               selectedValue={graphicsSettings.texture}
-              style={tailwind('text-white bg-gray-700 rounded')}
+              style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
               onValueChange={(value) => updateGraphicsSetting('texture', value)}
             >
               <Picker.Item label="Low" value="low" />
@@ -208,10 +241,10 @@ const App = memo(() => {
             </Picker>
           </View>
           <View style={tailwind('mb-2')}>
-            <Text style={tailwind('text-white')}>Effects</Text>
+            <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>Effects</Text>
             <Picker
               selectedValue={graphicsSettings.effects}
-              style={tailwind('text-white bg-gray-700 rounded')}
+              style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
               onValueChange={(value) => updateGraphicsSetting('effects', value)}
             >
               <Picker.Item label="Off" value="off" />
@@ -220,10 +253,10 @@ const App = memo(() => {
             </Picker>
           </View>
           <View style={tailwind('mb-2')}>
-            <Text style={tailwind('text-white')}>FPS Limit</Text>
+            <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>FPS Limit</Text>
             <Picker
               selectedValue={graphicsSettings.fpsLimit}
-              style={tailwind('text-white bg-gray-700 rounded')}
+              style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
               onValueChange={(value) => updateGraphicsSetting('fpsLimit', value)}
             >
               <Picker.Item label="30 FPS" value="30" />
@@ -232,14 +265,20 @@ const App = memo(() => {
           </View>
         </View>
       )}
-      <SystemStatus systemStatus={systemStatus} />
+      <SystemStatus systemStatus={systemStatus} isDarkMode={isDarkMode} />
       <NetworkOptimizer
         vpnServer={vpnServer}
         setVpnServer={setVpnServer}
         ping={systemStatus.ping}
         networkState={networkState}
+        isDarkMode={isDarkMode}
       />
-      <GameList games={games} optimizeGame={optimizeGame} graphicsSettings={graphicsSettings} />
+      <GameList
+        games={games}
+        optimizeGame={optimizeGame}
+        graphicsSettings={graphicsSettings}
+        isDarkMode={isDarkMode}
+      />
     </View>
   );
 });
