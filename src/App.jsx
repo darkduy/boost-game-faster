@@ -3,13 +3,14 @@ import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import NetInfo from '@react-native-community/netinfo';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import EncryptedStorage from 'react-native-encrypted-storage';
 import GameList from './components/GameList';
 import SystemStatus from './components/SystemStatus';
 import NetworkOptimizer from './components/NetworkOptimizer';
 import OnboardingScreen from './screens/OnboardingScreen';
 import { GraphicsSettingsUtils } from './utils/GraphicsSettingsUtils';
 import { DeviceMonitor } from './utils/DeviceMonitor';
+import { SecurityUtils } from './utils/SecurityUtils';
 
 // Native modules
 const { GameDetector, BackgroundProcess, SystemSettings, BoostMode } = NativeModules;
@@ -38,21 +39,31 @@ const App = memo(() => {
   useEffect(() => {
     const initializeApp = async () => {
       try {
+        // Check root status
+        const isRooted = await SecurityUtils.checkRootStatus();
+        if (isRooted) {
+          Alert.alert('Security Error', 'Rooted devices are not supported.', [
+            { text: 'OK', onPress: () => Linking.openSettings() },
+          ]);
+          setIsLoading(false);
+          return;
+        }
+
         // Check onboarding status
-        const onboardingStatus = await AsyncStorage.getItem('onboardingComplete');
+        const onboardingStatus = await SecurityUtils.getSecureData('onboardingComplete');
         if (onboardingStatus === 'true') {
           setIsOnboardingComplete(true);
         }
 
         // Load cached games
-        const cachedGames = await AsyncStorage.getItem('cachedGames');
+        const cachedGames = await SecurityUtils.getSecureData('cachedGames');
         if (cachedGames) {
-          setGames(JSON.parse(cachedGames));
+          setGames(cachedGames);
         }
 
         // Load device info
         const deviceInfo = await NativeModules.DeviceInfo.getDeviceInfo();
-        setManufacturer(deviceInfo.manufacturer || 'unknown');
+        setManufacturer(SecurityUtils.sanitizeInput(deviceInfo.manufacturer || 'unknown'));
 
         // Load games asynchronously
         GameDetector.getInstalledGames((error, detectedGames) => {
@@ -60,18 +71,20 @@ const App = memo(() => {
             Alert.alert('Error', `Failed to detect games: ${error}`);
             return;
           }
-          setGames(detectedGames || []);
-          AsyncStorage.setItem('cachedGames', JSON.stringify(detectedGames || []));
+          const sanitizedGames = detectedGames.map(game => ({
+            ...game,
+            name: SecurityUtils.sanitizeInput(game.name),
+            packageName: SecurityUtils.sanitizeInput(game.packageName),
+            genre: SecurityUtils.sanitizeInput(game.genre),
+          }));
+          setGames(sanitizedGames);
+          SecurityUtils.storeSecureData('cachedGames', sanitizedGames);
         });
 
         // Enable high performance mode
         SystemSettings.enableHighPerformanceMode((error) => {
           if (error && error.includes('PERMISSION_DENIED')) {
-            Alert.alert(
-              'Permission Required',
-              'Please allow access to system settings for high performance mode.',
-              [{ text: 'OK', onPress: () => Linking.openSettings() }]
-            );
+            GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
           }
         });
 
@@ -87,7 +100,7 @@ const App = memo(() => {
               temperature: DeviceMonitor.getSimulatedTemperature(),
             };
             DeviceMonitor.checkPerformance(newStatus, Alert);
-            AsyncStorage.setItem('systemStatus', JSON.stringify(newStatus));
+            SecurityUtils.storeSecureData('systemStatus', newStatus);
             return newStatus;
           });
         });
@@ -96,7 +109,7 @@ const App = memo(() => {
         const unsubscribeNet = NetInfo.addEventListener((state) => {
           setNetworkState({
             isConnected: state.isConnected,
-            type: state.type,
+            type: SecurityUtils.sanitizeInput(state.type),
           });
         });
 
@@ -126,7 +139,7 @@ const App = memo(() => {
         GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
         return;
       }
-      Alert.alert('Success', `Optimized ${game.name}. Closed ${closedApps.length} background apps.`);
+      Alert.alert('Success', `Optimized ${SecurityUtils.sanitizeInput(game.name)}. Closed ${closedApps.length} background apps.`);
     });
   }, [manufacturer]);
 
@@ -161,15 +174,15 @@ const App = memo(() => {
 
   // Auto-suggest graphics settings based on device capability
   const suggestGraphicsSettings = useCallback(() => {
-    const suggestedSettings = {
-      resolution: systemStatus.ramUsage > 70 ? 'low' : 'medium',
-      texture: systemStatus.ramUsage > 70 ? 'low' : 'medium',
-      effects: systemStatus.cpuUsage > 70 ? 'off' : 'low',
-      fpsLimit: systemStatus.temperature > 40 ? '30' : '60',
-    };
-    setGraphicsSettings(GraphicsSettingsUtils.validateSettings(suggestedSettings));
-    Alert.alert('Suggested Settings', 'Graphics settings updated based on device performance.');
-  }, [systemStatus]);
+    BoostMode.suggestGraphicsSettings((error, suggestedSettings) => {
+      if (error) {
+        GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
+        return;
+      }
+      setGraphicsSettings(GraphicsSettingsUtils.validateSettings(suggestedSettings));
+      Alert.alert('Suggested Settings', 'Graphics settings updated based on device performance.');
+    });
+  }, []);
 
   // Render loading screen
   if (isLoading) {
@@ -186,7 +199,7 @@ const App = memo(() => {
     return (
       <OnboardingScreen
         onComplete={() => {
-          AsyncStorage.setItem('onboardingComplete', 'true');
+          SecurityUtils.storeSecureData('onboardingComplete', 'true');
           setIsOnboardingComplete(true);
         }}
       />
@@ -221,7 +234,7 @@ const App = memo(() => {
             <Picker
               selectedValue={graphicsSettings.resolution}
               style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
-              onValueChange={(value) => updateGraphicsSetting('resolution', value)}
+              onValueChange={(value) => updateGraphicsSetting('resolution', SecurityUtils.sanitizeInput(value))}
             >
               <Picker.Item label="Default" value="default" />
               <Picker.Item label="Low (480p)" value="low" />
@@ -233,7 +246,7 @@ const App = memo(() => {
             <Picker
               selectedValue={graphicsSettings.texture}
               style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
-              onValueChange={(value) => updateGraphicsSetting('texture', value)}
+              onValueChange={(value) => updateGraphicsSetting('texture', SecurityUtils.sanitizeInput(value))}
             >
               <Picker.Item label="Low" value="low" />
               <Picker.Item label="Medium" value="medium" />
@@ -245,7 +258,7 @@ const App = memo(() => {
             <Picker
               selectedValue={graphicsSettings.effects}
               style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
-              onValueChange={(value) => updateGraphicsSetting('effects', value)}
+              onValueChange={(value) => updateGraphicsSetting('effects', SecurityUtils.sanitizeInput(value))}
             >
               <Picker.Item label="Off" value="off" />
               <Picker.Item label="Low" value="low" />
@@ -257,7 +270,7 @@ const App = memo(() => {
             <Picker
               selectedValue={graphicsSettings.fpsLimit}
               style={tailwind(`bg-gray-700 rounded ${isDarkMode ? 'text-white' : 'text-black'}`)}
-              onValueChange={(value) => updateGraphicsSetting('fpsLimit', value)}
+              onValueChange={(value) => updateGraphicsSetting('fpsLimit', SecurityUtils.sanitizeInput(value))}
             >
               <Picker.Item label="30 FPS" value="30" />
               <Picker.Item label="60 FPS" value="60" />
@@ -268,7 +281,7 @@ const App = memo(() => {
       <SystemStatus systemStatus={systemStatus} isDarkMode={isDarkMode} />
       <NetworkOptimizer
         vpnServer={vpnServer}
-        setVpnServer={setVpnServer}
+        setVpnServer={(value) => setVpnServer(SecurityUtils.sanitizeInput(value))}
         ping={systemStatus.ping}
         networkState={networkState}
         isDarkMode={isDarkMode}
