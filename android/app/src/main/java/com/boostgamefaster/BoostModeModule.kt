@@ -5,17 +5,22 @@ import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
-import android.view.WindowManager
 import android.widget.TextView
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Callback
 import com.facebook.react.bridge.ReadableMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private val context: Context = reactContext
     private var overlayView: TextView? = null
+    private val coroutineScope = CoroutineScope(Dispatchers.Main)
+    private val sharedPrefs = context.getSharedPreferences("BoostModePrefs", Context.MODE_PRIVATE)
 
     override fun getName(): String = "BoostMode"
 
@@ -26,29 +31,31 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      */
     @ReactMethod
     fun enableBoostMode(settings: ReadableMap, callback: Callback) {
-        try {
-            // Check all required permissions
-            val permissionError = checkPermissions()
-            if (permissionError != null) {
-                callback.invoke(permissionError)
-                return
+        coroutineScope.launch {
+            try {
+                // Check cached permissions
+                val permissionError = checkPermissions()
+                if (permissionError != null) {
+                    callback.invoke(permissionError)
+                    return@launch
+                }
+
+                // Enable Do Not Disturb
+                enableDoNotDisturb()
+
+                // Close background apps asynchronously
+                closeBackgroundApps()
+
+                // Apply graphics settings
+                applyGraphicsSettings(settings)
+
+                // Show FPS/Ping overlay
+                showOverlay()
+
+                callback.invoke(null, "BoostMode enabled with custom graphics settings")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
             }
-
-            // Enable Do Not Disturb
-            enableDoNotDisturb()
-
-            // Close background apps
-            closeBackgroundApps()
-
-            // Apply graphics settings
-            applyGraphicsSettings(settings)
-
-            // Show FPS/Ping overlay
-            showOverlay()
-
-            callback.invoke(null, "BoostMode enabled with custom graphics settings")
-        } catch (e: Exception) {
-            callback.invoke("Error: ${e.message}")
         }
     }
 
@@ -58,41 +65,50 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      */
     @ReactMethod
     fun disableBoostMode(callback: Callback) {
-        try {
-            // Disable Do Not Disturb
-            disableDoNotDisturb()
+        coroutineScope.launch {
+            try {
+                // Disable Do Not Disturb
+                disableDoNotDisturb()
 
-            // Remove FPS/Ping overlay
-            removeOverlay()
+                // Remove FPS/Ping overlay
+                removeOverlay()
 
-            // Reset graphics settings
-            resetGraphicsSettings()
+                // Reset graphics settings
+                resetGraphicsSettings()
 
-            callback.invoke(null, "BoostMode disabled")
-        } catch (e: Exception) {
-            callback.invoke("Error: ${e.message}")
+                callback.invoke(null, "BoostMode disabled")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
         }
     }
 
     /**
-     * Checks required permissions for BoostMode.
+     * Checks required permissions for BoostMode, using cached results if available.
      * @return Error message if any permission is missing, null otherwise
      */
-    private fun checkPermissions(): String? {
+    private suspend fun checkPermissions(): String? = withContext(Dispatchers.IO) {
+        // Check cached permissions
+        val cachedPermissions = sharedPrefs.getString("permissions", null)
+        if (cachedPermissions == "granted") return@withContext null
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-            return "PERMISSION_DENIED: Overlay permission required"
+            return@withContext "PERMISSION_DENIED: Overlay permission required"
         }
         if (!hasUsageStatsPermission()) {
-            return "PERMISSION_DENIED: Usage stats permission required"
+            return@withContext "PERMISSION_DENIED: Usage stats permission required"
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.System.canWrite(context)) {
-            return "PERMISSION_DENIED: Write settings permission required"
+            return@withContext "PERMISSION_DENIED: Write settings permission required"
         }
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !notificationManager.isNotificationPolicyAccessGranted) {
-            return "PERMISSION_DENIED: Notification policy permission required"
+            return@withContext "PERMISSION_DENIED: Notification policy permission required"
         }
-        return null
+
+        // Cache permission result
+        sharedPrefs.edit().putString("permissions", "granted").apply()
+        null
     }
 
     /**
@@ -131,13 +147,13 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     /**
      * Closes non-foreground apps to free up resources.
      */
-    private fun closeBackgroundApps() {
+    private suspend fun closeBackgroundApps() = withContext(Dispatchers.IO) {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val runningApps = activityManager.runningAppProcesses ?: emptyList()
-        for (process in runningApps) {
-            if (process.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
-                activityManager.killBackgroundProcesses(process.processName)
-            }
+        val runningApps = activityManager.runningAppProcesses?.filter {
+            it.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        } ?: emptyList()
+        runningApps.forEach { process ->
+            activityManager.killBackgroundProcesses(process.processName)
         }
     }
 
@@ -145,7 +161,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      * Applies graphics settings (resolution, texture, effects, FPS limit).
      * @param settings ReadableMap containing graphics settings
      */
-    private fun applyGraphicsSettings(settings: ReadableMap) {
+    private suspend fun applyGraphicsSettings(settings: ReadableMap) = withContext(Dispatchers.IO) {
         try {
             // Adjust screen resolution (simulated for Android 9)
             val resolution = settings.getString("resolution") ?: "default"
@@ -155,19 +171,20 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                     "medium" -> 0.75f // 720p
                     else -> 1.0f
                 }
-                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                val display = windowManager.defaultDisplay
-                val metrics = android.util.DisplayMetrics()
-                display.getMetrics(metrics)
-                metrics.density = metrics.density * scale
-                windowManager.defaultDisplay.getMetrics(metrics)
+                withContext(Dispatchers.Main) {
+                    val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val display = windowManager.defaultDisplay
+                    val metrics = android.util.DisplayMetrics()
+                    display.getMetrics(metrics)
+                    metrics.density = metrics.density * scale
+                    windowManager.defaultDisplay.getMetrics(metrics)
+                }
             }
 
             // Store texture, effects, and FPS settings
             val texture = settings.getString("texture") ?: "medium"
             val effects = settings.getString("effects") ?: "medium"
             val fpsLimit = settings.getString("fpsLimit") ?: "60"
-            val sharedPrefs = context.getSharedPreferences("BoostModePrefs", Context.MODE_PRIVATE)
             sharedPrefs.edit()
                 .putString("texture", texture)
                 .putString("effects", effects)
@@ -181,17 +198,18 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     /**
      * Resets graphics settings to default.
      */
-    private fun resetGraphicsSettings() {
+    private suspend fun resetGraphicsSettings() = withContext(Dispatchers.IO) {
         try {
             // Reset resolution to default
-            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val display = windowManager.defaultDisplay
-            val metrics = android.util.DisplayMetrics()
-            display.getRealMetrics(metrics)
-            windowManager.defaultDisplay.getMetrics(metrics)
+            withContext(Dispatchers.Main) {
+                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                val display = windowManager.defaultDisplay
+                val metrics = android.util.DisplayMetrics()
+                display.getRealMetrics(metrics)
+                windowManager.defaultDisplay.getMetrics(metrics)
+            }
 
             // Clear stored graphics settings
-            val sharedPrefs = context.getSharedPreferences("BoostModePrefs", Context.MODE_PRIVATE)
             sharedPrefs.edit().clear().apply()
         } catch (e: Exception) {
             android.util.Log.e("BoostMode", "Failed to reset graphics settings: ${e.message}")
@@ -227,18 +245,18 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
         windowManager.addView(overlayView, params)
 
-        // Simulate FPS/Ping updates
-        Thread {
+        // Update FPS/Ping overlay less frequently
+        coroutineScope.launch {
             var fps = 0
             while (overlayView != null) {
                 fps = (fps + 1) % 60
                 val ping = (Math.random() * 100).toInt()
-                reactApplicationContext.runOnUiQueueThread {
+                withContext(Dispatchers.Main) {
                     overlayView?.text = "FPS: $fps | Ping: ${ping}ms"
                 }
-                Thread.sleep(1000)
+                delay(2000) // Reduced update frequency
             }
-        }.start()
+        }
     }
 
     /**
