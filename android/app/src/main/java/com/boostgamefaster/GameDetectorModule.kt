@@ -50,6 +50,32 @@ class GameDetectorModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
 
     /**
+     * Retrieves all installed apps for manual selection.
+     * @param callback Returns list of apps or error
+     */
+    @ReactMethod
+    fun getAllInstalledApps(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val packageManager = context.packageManager
+                val installedApps = packageManager.getInstalledApplications(PackageManager.GET_META_DATA)
+                val apps = installedApps
+                    .filter { it.packageName != context.packageName } // Exclude self
+                    .map {
+                        mapOf(
+                            "name" to sanitizeInput(packageManager.getApplicationLabel(it).toString()),
+                            "packageName" to it.packageName,
+                            "genre" to "Unknown"
+                        )
+                    }
+                callback.invoke(null, apps)
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Starts monitoring game status and emits updates.
      */
     @ReactMethod
