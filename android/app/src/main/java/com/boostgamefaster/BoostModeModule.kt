@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private val context: Context = reactContext
@@ -28,6 +29,26 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     override fun getName(): String = "BoostMode"
 
     /**
+     * Checks if device is rooted.
+     * @return True if rooted, false otherwise
+     */
+    @ReactMethod
+    fun checkRootStatus(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val isRooted = checkRoot()
+                if (isRooted) {
+                    callback.invoke("Error: Rooted device detected")
+                } else {
+                    callback.invoke(null, false)
+                }
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * Enables BoostMode with custom graphics settings, Do Not Disturb, and FPS/ping overlay.
      * @param settings Graphics settings (resolution, texture, effects, fpsLimit)
      * @param callback Callback to return success or error
@@ -36,6 +57,19 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     fun enableBoostMode(settings: ReadableMap, callback: Callback) {
         coroutineScope.launch {
             try {
+                // Check root status
+                if (checkRoot()) {
+                    callback.invoke("Error: Rooted device detected")
+                    return@launch
+                }
+
+                // Validate input
+                val validatedSettings = validateSettings(settings)
+                if (validatedSettings == null) {
+                    callback.invoke("Error: Invalid graphics settings")
+                    return@launch
+                }
+
                 // Check cached permissions
                 val permissionError = checkPermissions()
                 if (permissionError != null) {
@@ -50,7 +84,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 closeBackgroundApps()
 
                 // Apply graphics settings
-                applyGraphicsSettings(settings)
+                applyGraphicsSettings(validatedSettings)
 
                 // Show FPS/Ping overlay
                 showOverlay()
@@ -94,6 +128,12 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     fun suggestGraphicsSettings(callback: Callback) {
         coroutineScope.launch {
             try {
+                // Check root status
+                if (checkRoot()) {
+                    callback.invoke("Error: Rooted device detected")
+                    return@launch
+                }
+
                 val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                 val memoryInfo = ActivityManager.MemoryInfo()
                 activityManager.getMemoryInfo(memoryInfo)
@@ -111,6 +151,51 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Checks if device is rooted by looking for common root indicators.
+     * @return True if rooted, false otherwise
+     */
+    private fun checkRoot(): Boolean {
+        val rootFiles = arrayOf(
+            "/system/app/Superuser.apk",
+            "/sbin/su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/data/local/xbin/su",
+            "/data/local/bin/su",
+            "/system/sd/xbin/su"
+        )
+        return rootFiles.any { File(it).exists() }
+    }
+
+    /**
+     * Validates graphics settings to prevent injection or invalid values.
+     * @param settings Input settings
+     * @return Validated settings or null if invalid
+     */
+    private fun validateSettings(settings: ReadableMap): ReadableMap? {
+        try {
+            val validResolutions = listOf("default", "low", "medium")
+            val validTextures = listOf("low", "medium", "high")
+            val validEffects = listOf("off", "low", "medium")
+            val validFpsLimits = listOf("30", "60")
+
+            val resolution = settings.getString("resolution")?.takeIf { it in validResolutions } ?: "default"
+            val texture = settings.getString("texture")?.takeIf { it in validTextures } ?: "medium"
+            val effects = settings.getString("effects")?.takeIf { it in validEffects } ?: "medium"
+            val fpsLimit = settings.getString("fpsLimit")?.takeIf { it in validFpsLimits } ?: "60"
+
+            return com.facebook.react.bridge.Arguments.createMap().apply {
+                putString("resolution", resolution)
+                putString("texture", texture)
+                putString("effects", effects)
+                putString("fpsLimit", fpsLimit)
+            }
+        } catch (e: Exception) {
+            return null
         }
     }
 
@@ -164,7 +249,9 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      */
     private fun enableDoNotDisturb() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && notificationManager.isNotificationPolicyAccessGranted) {
+            notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_NONE)
+        }
     }
 
     /**
@@ -172,7 +259,9 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      */
     private fun disableDoNotDisturb() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && notificationManager.isNotificationPolicyAccessGranted) {
+            notificationManager.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+        }
     }
 
     /**
@@ -181,7 +270,8 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     private suspend fun closeBackgroundApps() = withContext(Dispatchers.IO) {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val runningApps = activityManager.runningAppProcesses?.filter {
-            it.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            it.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
+            it.processName != context.packageName
         } ?: emptyList()
         runningApps.forEach { process ->
             activityManager.killBackgroundProcesses(process.processName)
@@ -251,6 +341,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      * Shows FPS and ping overlay on screen with drag functionality.
      */
     private fun showOverlay() {
+        if (!Settings.canDrawOverlays(context)) return
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         overlayView = TextView(context).apply {
             text = "FPS: 0 | Ping: 0ms"
