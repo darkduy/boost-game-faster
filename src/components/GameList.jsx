@@ -1,14 +1,38 @@
-import React, { memo, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, Alert } from 'react-native';
+import React, { memo, useCallback, useState } from 'react';
+import { View, Text, FlatList, TouchableOpacity, Alert, TextInput } from 'react-native';
 import { useTailwind } from 'tailwind-rn';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GraphicsSettingsUtils } from '../utils/GraphicsSettingsUtils';
 
 // Native modules
 const { BoostMode } = NativeModules;
 
 // Memoized component to prevent unnecessary re-renders
-const GameList = memo(({ games, optimizeGame, graphicsSettings }) => {
+const GameList = memo(({ games, optimizeGame, graphicsSettings, isDarkMode }) => {
   const tailwind = useTailwind();
+  const [filter, setFilter] = useState('');
+
+  // Filter games by name or genre
+  const filteredGames = games.filter(
+    (game) =>
+      game.name.toLowerCase().includes(filter.toLowerCase()) ||
+      (game.genre && game.genre.toLowerCase().includes(filter.toLowerCase()))
+  );
+
+  // Save game-specific BoostMode settings
+  const saveGameSettings = useCallback(
+    async (game, settings) => {
+      try {
+        const gameSettings = await AsyncStorage.getItem('gameSettings');
+        const settingsMap = gameSettings ? JSON.parse(gameSettings) : {};
+        settingsMap[game.packageName] = settings;
+        await AsyncStorage.setItem('gameSettings', JSON.stringify(settingsMap));
+      } catch (e) {
+        Alert.alert('Error', `Failed to save settings for ${game.name}: ${e.message}`);
+      }
+    },
+    []
+  );
 
   // Start game with BoostMode and optimized graphics settings
   const startGameWithBoostMode = useCallback(
@@ -20,37 +44,47 @@ const GameList = memo(({ games, optimizeGame, graphicsSettings }) => {
           return;
         }
         optimizeGame(game);
+        saveGameSettings(game, validatedSettings);
         Alert.alert('Success', `BoostMode enabled for ${game.name} with custom graphics settings. Swipe from left to view FPS/ping.`);
       });
     },
-    [graphicsSettings, optimizeGame]
+    [graphicsSettings, optimizeGame, saveGameSettings]
   );
 
   // Render individual game item
   const renderItem = useCallback(
     ({ item }) => (
       <TouchableOpacity
-        style={tailwind('bg-gray-800 p-4 mb-2 rounded-lg')}
+        style={tailwind(`bg-gray-800 p-4 mb-2 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}
         onPress={() => startGameWithBoostMode(item)}
       >
-        <Text style={tailwind('text-white text-lg')}>{item.name}</Text>
+        <Text style={tailwind(`text-lg ${isDarkMode ? 'text-white' : 'text-black'}`)}>
+          {item.name} {item.genre ? `(${item.genre})` : ''}
+        </Text>
       </TouchableOpacity>
     ),
-    [startGameWithBoostMode]
+    [startGameWithBoostMode, isDarkMode]
   );
 
   return (
     <View style={tailwind('flex-1')}>
-      <Text style={tailwind('text-white text-xl mb-4')}>Installed Games</Text>
-      {games.length === 0 ? (
-        <Text style={tailwind('text-gray-400')}>No games detected</Text>
+      <Text style={tailwind(`text-xl mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Installed Games</Text>
+      <TextInput
+        style={tailwind(`border p-2 mb-4 rounded-lg ${isDarkMode ? 'border-gray-600 bg-gray-700 text-white' : 'border-gray-300 bg-white text-black'}`)}
+        placeholder="Filter by name or genre"
+        placeholderTextColor={isDarkMode ? '#aaa' : '#666'}
+        value={filter}
+        onChangeText={setFilter}
+      />
+      {filteredGames.length === 0 ? (
+        <Text style={tailwind(`text-gray-400 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>No games found</Text>
       ) : (
         <FlatList
-          data={games}
+          data={filteredGames}
           renderItem={renderItem}
           keyExtractor={(item) => item.packageName}
-          initialNumToRender={10} // Optimize initial render
-          maxToRenderPerBatch={10} // Optimize scrolling
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
         />
       )}
     </View>
