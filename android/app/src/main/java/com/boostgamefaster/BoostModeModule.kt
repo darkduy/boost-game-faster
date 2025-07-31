@@ -8,7 +8,6 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import com.facebook.react.bridge.ReactApplicationContext
@@ -27,12 +26,12 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     private var overlayView: TextView? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Main)
     private val sharedPrefs = context.getSharedPreferences("BoostModePrefs", Context.MODE_PRIVATE)
+    private var originalBrightness: Float? = null
 
     override fun getName(): String = "BoostMode"
 
     /**
      * Checks if device is rooted.
-     * @param callback Callback to return result
      */
     @ReactMethod
     fun checkRootStatus(callback: Callback) {
@@ -51,8 +50,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Scans available Wi-Fi networks and returns their details with optimal channel analysis.
-     * @param callback Callback to return list of networks or error
+     * Scans Wi-Fi networks, detects repeaters, and analyzes interference.
      */
     @ReactMethod
     fun scanWifiNetworks(callback: Callback) {
@@ -67,17 +65,141 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 val optimalChannels = listOf(1, 6, 11)
                 val channelCounts = scanResults.groupBy { calculateChannel(it.frequency) }
                     .mapValues { it.value.size }
+                val currentSsid = wifiManager.connectionInfo?.ssid?.replace("\"", "") ?: ""
                 val networks = scanResults.map { result ->
                     val channel = calculateChannel(result.frequency)
+                    val ssid = sanitizeInput(result.SSID ?: "Unknown")
+                    val isRepeater = ssid.contains(currentSsid, ignoreCase = true) && ssid != currentSsid
                     mapOf(
-                        "ssid" to sanitizeInput(result.SSID ?: "Unknown"),
+                        "ssid" to ssid,
                         "signalStrength" to result.level,
                         "frequency" to result.frequency,
                         "channel" to channel,
-                        "isOptimalChannel" to (channel in optimalChannels && channelCounts.getOrDefault(channel, 0) <= 3)
+                        "isOptimalChannel" to (channel in optimalChannels && channelCounts.getOrDefault(channel, 0) <= 3),
+                        "isRepeater" to isRepeater
                     )
                 }.filter { it["frequency"] as Int <= 2484 } // Only 2.4GHz for Galaxy J4+
-                callback.invoke(null, networks)
+                val channelInterference = (1..11).map { channel ->
+                    mapOf(
+                        "channel" to channel,
+                        "interference" to channelCounts.getOrDefault(channel, 0)
+                    )
+                }
+                val gameApp = getForegroundGameApp()
+                val result = mapOf(
+                    "networks" to networks,
+                    "channelInterference" to channelInterference,
+                    "repeaters" to networks.filter { it["isRepeater"] == true },
+                    "gameApp" to gameApp
+                )
+                callback.invoke(null, result)
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Suggests QoS settings for the specified game app.
+     */
+    @ReactMethod
+    fun suggestQosSettings(appName: String, callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val sanitizedAppName = sanitizeInput(appName)
+                val bandwidth = 85
+                val port = getGamePort(sanitizedAppName) ?: "any"
+                val settings = mapOf(
+                    "appName" to sanitizedAppName,
+                    "bandwidth" to bandwidth,
+                    "port" to port
+                )
+                callback.invoke(null, settings)
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Checks performance metrics (CPU, RAM, ping).
+     */
+    @ReactMethod
+    fun checkPerformance(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val memoryInfo = ActivityManager.MemoryInfo()
+                activityManager.getMemoryInfo(memoryInfo)
+                val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
+                val availRam = memoryInfo.availMem / (1024 * 1024) // MB
+                val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
+                val cpuUsage = getCpuUsage() // Simplified
+                val ping = (Math.random() * 150).toInt() // Mock ping
+                val result = mapOf(
+                    "cpuUsage" to cpuUsage,
+                    "ramUsage" to ramUsage,
+                    "ping" to ping
+                )
+                callback.invoke(null, result)
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Applies BoostMode profile with custom settings.
+     */
+    @ReactMethod
+    fun applyBoostProfile(profile: String, callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val sanitizedProfile = sanitizeInput(profile)
+                val settings = when (sanitizedProfile) {
+                    "High Performance" -> mapOf(
+                        "resolution" to "medium",
+                        "texture" to "medium",
+                        "effects" to "low",
+                        "fpsLimit" to "60",
+                        "batterySaver" to false
+                    )
+                    "Battery Saver" -> mapOf(
+                        "resolution" to "low",
+                        "texture" to "low",
+                        "effects" to "off",
+                        "fpsLimit" to "30",
+                        "batterySaver" to true
+                    )
+                    else -> mapOf(
+                        "resolution" to "default",
+                        "texture" to "medium",
+                        "effects" to "medium",
+                        "fpsLimit" to "60",
+                        "batterySaver" to false
+                    )
+                }
+                sharedPrefs.edit().putString("currentProfile", sanitizedProfile).apply()
+                if (settings["batterySaver"] == true) {
+                    enableBatterySaver { error, _ ->
+                        if (error != null) {
+                            android.util.Log.w("BoostMode", "Failed to enable battery saver: $error")
+                        }
+                    }
+                } else {
+                    disableBatterySaver { error, _ ->
+                        if (error != null) {
+                            android.util.Log.w("BoostMode", "Failed to disable battery saver: $error")
+                        }
+                    }
+                }
+                applyGraphicsSettings(com.facebook.react.bridge.Arguments.createMap().apply {
+                    putString("resolution", settings["resolution"] as String)
+                    putString("texture", settings["texture"] as String)
+                    putString("effects", settings["effects"] as String)
+                    putString("fpsLimit", settings["fpsLimit"] as String)
+                })
+                callback.invoke(null, "Applied $sanitizedProfile profile")
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
@@ -86,8 +208,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Opens system Wi-Fi settings for manual connection.
-     * @param ssid SSID of the network
-     * @param callback Callback to return success or error
      */
     @ReactMethod
     fun connectToWifi(ssid: String, callback: Callback) {
@@ -105,57 +225,107 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Enables BoostMode with Wi-Fi optimization, graphics settings, Do Not Disturb, and FPS/ping overlay.
-     * @param settings Graphics settings (resolution, texture, effects, fpsLimit)
-     * @param callback Callback to return success or error
+     * Enables battery saver mode (reduce brightness, disable vibration).
+     */
+    @ReactMethod
+    fun enableBatterySaver(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                if (!Settings.System.canWrite(context)) {
+                    callback.invoke("Error: Write settings permission required")
+                    return@launch
+                }
+                originalBrightness = Settings.System.getFloat(
+                    context.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS
+                )
+                Settings.System.putFloat(
+                    context.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS,
+                    0.2f * 255
+                )
+                Settings.System.putInt(
+                    context.contentResolver,
+                    Settings.System.VIBRATE_ON,
+                    0
+                )
+                callback.invoke(null, "Battery saver enabled")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Disables battery saver mode and restores original settings.
+     */
+    @ReactMethod
+    fun disableBatterySaver(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                if (!Settings.System.canWrite(context)) {
+                    callback.invoke("Error: Write settings permission required")
+                    return@launch
+                }
+                originalBrightness?.let {
+                    Settings.System.putFloat(
+                        context.contentResolver,
+                        Settings.System.SCREEN_BRIGHTNESS,
+                        it
+                    )
+                }
+                Settings.System.putInt(
+                    context.contentResolver,
+                    Settings.System.VIBRATE_ON,
+                    1
+                )
+                callback.invoke(null, "Battery saver disabled")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Enables BoostMode with auto game detection, Wi-Fi optimization, and profile settings.
      */
     @ReactMethod
     fun enableBoostMode(settings: ReadableMap, callback: Callback) {
         coroutineScope.launch {
             try {
-                // Check root status
                 if (checkRoot()) {
                     callback.invoke("Error: Rooted device detected")
                     return@launch
                 }
-
-                // Validate input
                 val validatedSettings = validateSettings(settings)
                 if (validatedSettings == null) {
                     callback.invoke("Error: Invalid graphics settings")
                     return@launch
                 }
-
-                // Check cached permissions
                 val permissionError = checkPermissions()
                 if (permissionError != null) {
                     callback.invoke(permissionError)
                     return@launch
                 }
-
-                // Enable Do Not Disturb
                 enableDoNotDisturb()
-
-                // Close background apps
+                val gameApp = getForegroundGameApp()
+                if (gameApp != null) {
+                    sharedPrefs.edit().putString("currentGame", gameApp).apply()
+                    suggestQosSettings(gameApp) { _, _ -> } // Trigger QoS for game
+                }
                 closeBackgroundApps()
-
-                // Apply graphics settings
                 applyGraphicsSettings(validatedSettings)
-
-                // Scan Wi-Fi networks periodically
-                scanWifiNetworks { error, networks ->
-                    if (error == null && networks != null) {
+                scanWifiNetworks { error, result ->
+                    if (error == null && result != null) {
+                        val networks = result["networks"] as List<Map<String, Any>>
                         val optimalNetwork = networks.find { it["isOptimalChannel"] == true && it["signalStrength"] > -70 }
                         if (optimalNetwork != null) {
                             sharedPrefs.edit().putString("preferredWifi", optimalNetwork["ssid"] as String).apply()
                         }
                     }
                 }
-
-                // Show FPS/Ping overlay
                 showOverlay()
-
-                callback.invoke(null, "BoostMode enabled with Wi-Fi optimization")
+                callback.invoke(null, "BoostMode enabled with auto game detection and profile")
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
@@ -164,21 +334,20 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Disables BoostMode, resets settings, and removes overlay.
-     * @param callback Callback to return success or error
      */
     @ReactMethod
     fun disableBoostMode(callback: Callback) {
         coroutineScope.launch {
             try {
-                // Disable Do Not Disturb
                 disableDoNotDisturb()
-
-                // Remove FPS/Ping overlay
+                disableBatterySaver { error, _ ->
+                    if (error != null) {
+                        android.util.Log.w("BoostMode", "Failed to disable battery saver: $error")
+                    }
+                }
                 removeOverlay()
-
-                // Reset graphics settings
                 resetGraphicsSettings()
-
+                sharedPrefs.edit().remove("currentGame").apply()
                 callback.invoke(null, "BoostMode disabled")
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
@@ -188,7 +357,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Suggests optimal graphics settings based on device performance.
-     * @param callback Callback to return suggested settings
      */
     @ReactMethod
     fun suggestGraphicsSettings(callback: Callback) {
@@ -204,7 +372,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
                 val availRam = memoryInfo.availMem / (1024 * 1024) // MB
                 val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
-
                 val suggestedSettings = mapOf(
                     "resolution" to if (ramUsage > 70) "low" else "medium",
                     "texture" to if (ramUsage > 70) "low" else "medium",
@@ -220,7 +387,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Checks if device is rooted.
-     * @return True if rooted, false otherwise
      */
     private fun checkRoot(): Boolean {
         val rootFiles = arrayOf(
@@ -237,8 +403,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Validates graphics settings.
-     * @param settings Input settings
-     * @return Validated settings or null if invalid
      */
     private fun validateSettings(settings: ReadableMap): ReadableMap? {
         try {
@@ -246,12 +410,10 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             val validTextures = listOf("low", "medium", "high")
             val validEffects = listOf("off", "low", "medium")
             val validFpsLimits = listOf("30", "60")
-
             val resolution = settings.getString("resolution")?.takeIf { it in validResolutions } ?: "default"
             val texture = settings.getString("texture")?.takeIf { it in validTextures } ?: "medium"
             val effects = settings.getString("effects")?.takeIf { it in validEffects } ?: "medium"
             val fpsLimit = settings.getString("fpsLimit")?.takeIf { it in validFpsLimits } ?: "60"
-
             return com.facebook.react.bridge.Arguments.createMap().apply {
                 putString("resolution", resolution)
                 putString("texture", texture)
@@ -265,12 +427,10 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Checks required permissions for BoostMode.
-     * @return Error message if any permission is missing, null otherwise
      */
     private suspend fun checkPermissions(): String? = withContext(Dispatchers.IO) {
         val cachedPermissions = sharedPrefs.getString("permissions", null)
         if (cachedPermissions == "granted") return@withContext null
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
             return@withContext "PERMISSION_DENIED: Overlay permission required"
         }
@@ -286,14 +446,12 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 return@withContext "PERMISSION_DENIED: Notification policy permission required"
             }
         }
-
         sharedPrefs.edit().putString("permissions", "granted").apply()
         null
     }
 
     /**
      * Checks if the app has usage stats permission.
-     * @return True if granted, false otherwise
      */
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
@@ -344,7 +502,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Applies graphics settings.
-     * @param settings ReadableMap containing graphics settings
      */
     private suspend fun applyGraphicsSettings(settings: ReadableMap) = withContext(Dispatchers.IO) {
         try {
@@ -364,7 +521,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                     windowManager.defaultDisplay.getMetrics(metrics)
                 }
             }
-
             val texture = settings.getString("texture") ?: "medium"
             val textureQuality = when (texture) {
                 "low" -> 0.5f
@@ -373,7 +529,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 else -> 0.75f
             }
             sharedPrefs.edit().putFloat("textureQuality", textureQuality).apply()
-
             val effects = settings.getString("effects") ?: "medium"
             val fpsLimit = settings.getString("fpsLimit") ?: "60"
             sharedPrefs.edit()
@@ -417,7 +572,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             textSize = 12f
             setPadding(10, 10, 10, 10)
         }
-
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -431,7 +585,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             x = sharedPrefs.getInt("overlayX", 0)
             y = sharedPrefs.getInt("overlayY", 0)
         }
-
         var initialX = 0f
         var initialY = 0f
         var initialTouchX = 0f
@@ -458,9 +611,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 else -> false
             }
         }
-
         windowManager.addView(overlayView, params)
-
         coroutineScope.launch {
             var fps = 0
             while (overlayView != null) {
@@ -469,7 +620,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 withContext(Dispatchers.Main) {
                     overlayView?.text = "FPS: $fps | Ping: ${ping}ms"
                 }
-                kotlinx.coroutines.delay(15000) // Increased to 15s
+                kotlinx.coroutines.delay(15000)
             }
         }
     }
@@ -487,8 +638,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Sanitizes input to prevent injection attacks.
-     * @param input Input string
-     * @return Sanitized string
      */
     private fun sanitizeInput(input: String): String {
         return input.replace(Regex("[<>{};]"), "")
@@ -496,13 +645,40 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Calculates Wi-Fi channel from frequency.
-     * @param frequency Frequency in MHz
-     * @return Channel number
      */
     private fun calculateChannel(frequency: Int): Int {
         return when {
             frequency in 2412..2484 -> (frequency - 2412) / 5 + 1
             else -> 0
         }
+    }
+
+    /**
+     * Gets the foreground game app.
+     */
+    private fun getForegroundGameApp(): String? {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val runningApps = activityManager.runningAppProcesses?.filter {
+            it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        } ?: return null
+        return runningApps.firstOrNull()?.processName
+    }
+
+    /**
+     * Gets the typical port for a game app (simplified).
+     */
+    private fun getGamePort(appName: String): String? {
+        val gamePorts = mapOf(
+            "com.example.game1" to "3074", // Example: Call of Duty
+            "com.example.game2" to "27015" // Example: Counter-Strike
+        )
+        return gamePorts[appName]
+    }
+
+    /**
+     * Gets CPU usage (simplified mock).
+     */
+    private fun getCpuUsage(): Float {
+        return (Math.random() * 100).toFloat() // Mock CPU usage
     }
 }
