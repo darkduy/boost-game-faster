@@ -1,24 +1,92 @@
-import React, { memo, useCallback } from 'react';
-import { View, Text, TouchableOpacity, Alert } from 'react-native';
+import React, { useState, useEffect, useCallback, memo } from 'react';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, Alert } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import { SecurityUtils } from '../utils/SecurityUtils';
+import { NativeModules } from 'react-native';
+
+const { BoostMode } = NativeModules;
 
 // Memoized component to prevent unnecessary re-renders
 const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, isDarkMode }) => {
   const tailwind = useTailwind();
+  const [wifiNetworks, setWifiNetworks] = useState([]);
+  const [isScanning, setIsScanning] = useState(false);
+  const [selectedWifi, setSelectedWifi] = useState(null);
+  const [recommendation, setRecommendation] = useState('');
 
-  // Simulate VPN connection (Android 9 lacks native VPN API)
-  const connectToVpn = useCallback(() => {
-    Alert.alert('VPN Connection', `Connected to ${SecurityUtils.sanitizeInput(vpnServer)} server.`);
-  }, [vpnServer]);
+  // Check location permission and scan Wi-Fi networks
+  const scanWifiNetworks = useCallback(async () => {
+    try {
+      const hasPermission = await SecurityUtils.checkLocationPermission();
+      if (!hasPermission) {
+        Alert.alert('Permission Required', 'Please grant location permission to scan Wi-Fi networks.');
+        return;
+      }
+      setIsScanning(true);
+      BoostMode.scanWifiNetworks((error, networks) => {
+        setIsScanning(false);
+        if (error) {
+          Alert.alert('Error', `Failed to scan Wi-Fi networks: ${error}`);
+          return;
+        }
+        const sanitizedNetworks = networks.map(network => ({
+          ssid: SecurityUtils.sanitizeInput(network.ssid),
+          signalStrength: network.signalStrength,
+          frequency: network.frequency,
+          channel: network.channel,
+        }));
+        setWifiNetworks(sanitizedNetworks);
+
+        // Generate recommendation
+        const strongNetwork = sanitizedNetworks.find(n => n.signalStrength > -70 && n.frequency >= 5000);
+        if (strongNetwork) {
+          setRecommendation(`Connect to ${strongNetwork.ssid} (5GHz, Channel ${strongNetwork.channel}) for better performance.`);
+        } else {
+          setRecommendation('Move closer to the router or place it in a central, open location.');
+        }
+      });
+    } catch (e) {
+      setIsScanning(false);
+      Alert.alert('Error', `Failed to scan Wi-Fi: ${e.message}`);
+    }
+  }, []);
+
+  // Connect to selected Wi-Fi network
+  const connectToWifi = useCallback(() => {
+    if (!selectedWifi) {
+      Alert.alert('Error', 'Please select a Wi-Fi network.');
+      return;
+    }
+    BoostMode.connectToWifi(selectedWifi, (error, success) => {
+      if (error) {
+        Alert.alert('Error', `Failed to connect to ${selectedWifi}: ${error}`);
+        return;
+      }
+      Alert.alert('Success', `Connected to ${SecurityUtils.sanitizeInput(selectedWifi)}.`);
+    });
+  }, [selectedWifi]);
+
+  // Render Wi-Fi network item
+  const renderWifiItem = useCallback(
+    ({ item }) => (
+      <TouchableOpacity
+        style={tailwind(`bg-gray-800 p-4 mb-2 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}
+        onPress={() => setSelectedWifi(item.ssid)}
+      >
+        <Text style={tailwind(`text-lg ${isDarkMode ? 'text-white' : 'text-black'}`)}>
+          {item.ssid} ({item.signalStrength}dBm, {item.frequency >= 5000 ? '5GHz' : '2.4GHz'}, Channel {item.channel})
+        </Text>
+      </TouchableOpacity>
+    ),
+    [isDarkMode]
+  );
 
   return (
     <View style={tailwind(`bg-gray-800 p-4 rounded-lg mb-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}>
       <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Network Optimizer</Text>
       <Text style={tailwind(`text-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
-        Network: {networkState.isConnected ? SecurityUtils.sanitizeInput(networkState.type) : 'Disconnected'}
-        {ping > 0 && ` | Ping: ${ping}ms`}
+        Status: {networkState.isConnected ? `Connected (${networkState.type})` : 'Disconnected'} | Ping: {ping}ms
       </Text>
       <View style={tailwind('mb-2')}>
         <Text style={tailwind(`text-white ${isDarkMode ? 'text-white' : 'text-black'}`)}>VPN Server</Text>
@@ -29,16 +97,44 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
         >
           <Picker.Item label="Auto" value="Auto" />
           <Picker.Item label="Singapore" value="Singapore" />
-          <Picker.Item label="USA" value="USA" />
           <Picker.Item label="Japan" value="Japan" />
+          <Picker.Item label="USA" value="USA" />
         </Picker>
       </View>
       <TouchableOpacity
-        style={tailwind('bg-green-500 p-2 rounded-lg')}
-        onPress={connectToVpn}
+        style={tailwind(`bg-blue-500 p-2 rounded-lg mb-2`)}
+        onPress={scanWifiNetworks}
+        disabled={isScanning}
       >
-        <Text style={tailwind('text-white text-center font-bold')}>Connect VPN</Text>
+        <Text style={tailwind('text-white text-center font-bold')}>
+          {isScanning ? 'Scanning Wi-Fi...' : 'Scan Wi-Fi Networks'}
+        </Text>
       </TouchableOpacity>
+      {recommendation ? (
+        <Text style={tailwind(`text-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
+          Recommendation: {recommendation}
+        </Text>
+      ) : null}
+      {wifiNetworks.length > 0 && (
+        <>
+          <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Available Wi-Fi Networks</Text>
+          <FlatList
+            data={wifiNetworks}
+            renderItem={renderWifiItem}
+            keyExtractor={(item) => item.ssid}
+            initialNumToRender={5}
+            maxToRenderPerBatch={5}
+            windowSize={3}
+          />
+          <TouchableOpacity
+            style={tailwind(`bg-green-500 p-2 rounded-lg mt-2`)}
+            onPress={connectToWifi}
+            disabled={!selectedWifi}
+          >
+            <Text style={tailwind('text-white text-center font-bold')}>Connect to Selected Wi-Fi</Text>
+          </TouchableOpacity>
+        </>
+      )}
     </View>
   );
 });
