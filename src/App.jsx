@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, memo } from 'react';
+import React, { useEffect, useState, useCallback, memo, useMemo } from 'react';
 import { View, Text, ActivityIndicator, Alert, NativeModules, NativeEventEmitter, TouchableOpacity, Linking, Appearance } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
@@ -12,10 +12,8 @@ import { GraphicsSettingsUtils } from './utils/GraphicsSettingsUtils';
 import { DeviceMonitor } from './utils/DeviceMonitor';
 import { SecurityUtils } from './utils/SecurityUtils';
 
-// Native modules
 const { GameDetector, BackgroundProcess, SystemSettings, BoostMode } = NativeModules;
 
-// Memoized component to prevent unnecessary re-renders
 const App = memo(() => {
   const tailwind = useTailwind();
   const [games, setGames] = useState([]);
@@ -35,11 +33,11 @@ const App = memo(() => {
   const [graphicsSettings, setGraphicsSettings] = useState(GraphicsSettingsUtils.getDefaultSettings());
   const [isDarkMode, setIsDarkMode] = useState(Appearance.getColorScheme() === 'dark');
 
-  // Initialize app: load onboarding, device info, cached games, and system settings
+  const memoizedSystemStatus = useMemo(() => systemStatus, [systemStatus]);
+
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        // Check root status
         const isRooted = await SecurityUtils.checkRootStatus();
         if (isRooted) {
           Alert.alert('Security Error', 'Rooted devices are not supported.', [
@@ -49,23 +47,24 @@ const App = memo(() => {
           return;
         }
 
-        // Check onboarding status
+        const hasLocationPermission = await SecurityUtils.checkLocationPermission();
+        if (!hasLocationPermission) {
+          Alert.alert('Permission Required', 'Location permission is needed for Wi-Fi scanning.');
+        }
+
         const onboardingStatus = await SecurityUtils.getSecureData('onboardingComplete');
         if (onboardingStatus === 'true') {
           setIsOnboardingComplete(true);
         }
 
-        // Load cached games (including manually added apps)
         const cachedGames = await SecurityUtils.getSecureData('cachedGames');
         if (cachedGames) {
           setGames(cachedGames);
         }
 
-        // Load device info
         const deviceInfo = await NativeModules.DeviceInfo.getDeviceInfo();
         setManufacturer(SecurityUtils.sanitizeInput(deviceInfo.manufacturer || 'unknown'));
 
-        // Load games asynchronously
         GameDetector.getInstalledGames((error, detectedGames) => {
           if (error) {
             Alert.alert('Error', `Failed to detect games: ${error}`);
@@ -81,14 +80,12 @@ const App = memo(() => {
           setGames(sanitizedGames);
         });
 
-        // Enable high performance mode
         SystemSettings.enableHighPerformanceMode((error) => {
           if (error && error.includes('PERMISSION_DENIED')) {
             GraphicsSettingsUtils.handlePermissionError(error, Linking, Alert);
           }
         });
 
-        // Listen for system status updates
         const eventEmitter = new NativeEventEmitter(GameDetector);
         eventEmitter.addListener('GameStatusUpdate', (status) => {
           setSystemStatus((prev) => {
@@ -105,7 +102,6 @@ const App = memo(() => {
           });
         });
 
-        // Monitor network state
         const unsubscribeNet = NetInfo.addEventListener((state) => {
           setNetworkState({
             isConnected: state.isConnected,
@@ -113,7 +109,6 @@ const App = memo(() => {
           });
         });
 
-        // Monitor dark mode changes
         const appearanceSubscription = Appearance.addChangeListener(({ colorScheme }) => {
           setIsDarkMode(colorScheme === 'dark');
         });
@@ -132,7 +127,6 @@ const App = memo(() => {
     initializeApp();
   }, []);
 
-  // Optimize game or app performance
   const optimizeGame = useCallback((game) => {
     BackgroundProcess.closeBackgroundApps(manufacturer, (error, closedApps) => {
       if (error) {
@@ -143,7 +137,6 @@ const App = memo(() => {
     });
   }, [manufacturer]);
 
-  // Toggle BoostMode
   const toggleBoostMode = useCallback(() => {
     if (boostModeEnabled) {
       BoostMode.disableBoostMode((error) => {
@@ -162,17 +155,15 @@ const App = memo(() => {
           return;
         }
         setBoostModeEnabled(true);
-        Alert.alert('Success', 'BoostMode enabled with custom graphics settings. Swipe from left to view FPS/ping overlay.');
+        Alert.alert('Success', 'BoostMode enabled with Wi-Fi optimization. Swipe from left to view FPS/ping overlay.');
       });
     }
   }, [boostModeEnabled, graphicsSettings]);
 
-  // Update graphics settings
   const updateGraphicsSetting = useCallback((key, value) => {
     setGraphicsSettings((prev) => GraphicsSettingsUtils.validateSettings({ ...prev, [key]: value }));
   }, []);
 
-  // Auto-suggest graphics settings based on device capability
   const suggestGraphicsSettings = useCallback(() => {
     BoostMode.suggestGraphicsSettings((error, suggestedSettings) => {
       if (error) {
@@ -184,7 +175,6 @@ const App = memo(() => {
     });
   }, []);
 
-  // Render loading screen
   if (isLoading) {
     return (
       <View style={tailwind(`flex-1 justify-center items-center ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`)}>
@@ -194,7 +184,6 @@ const App = memo(() => {
     );
   }
 
-  // Render onboarding screen
   if (!isOnboardingComplete) {
     return (
       <OnboardingScreen
@@ -206,7 +195,6 @@ const App = memo(() => {
     );
   }
 
-  // Render main UI
   return (
     <View style={tailwind(`flex-1 p-4 ${isDarkMode ? 'bg-gray-900' : 'bg-white'}`)}>
       <Text style={tailwind(`text-3xl font-bold mb-6 ${isDarkMode ? 'text-white' : 'text-black'}`)}>
@@ -278,17 +266,17 @@ const App = memo(() => {
           </View>
         </View>
       )}
-      <SystemStatus systemStatus={systemStatus} isDarkMode={isDarkMode} />
+      <SystemStatus systemStatus={memoizedSystemStatus} isDarkMode={isDarkMode} />
       <NetworkOptimizer
         vpnServer={vpnServer}
         setVpnServer={(value) => setVpnServer(SecurityUtils.sanitizeInput(value))}
-        ping={systemStatus.ping}
+        ping={memoizedSystemStatus.ping}
         networkState={networkState}
         isDarkMode={isDarkMode}
       />
       <GameList
         games={games}
-        setGames={setGames} // Pass setGames to update list
+        setGames={setGames}
         optimizeGame={optimizeGame}
         graphicsSettings={graphicsSettings}
         isDarkMode={isDarkMode}
