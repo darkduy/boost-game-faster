@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, Alert, Linking } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import { SecurityUtils } from '../utils/SecurityUtils';
@@ -7,7 +7,6 @@ import { NativeModules } from 'react-native';
 
 const { BoostMode } = NativeModules;
 
-// Memoized component to prevent unnecessary re-renders
 const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, isDarkMode }) => {
   const tailwind = useTailwind();
   const [wifiNetworks, setWifiNetworks] = useState([]);
@@ -20,7 +19,9 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
     try {
       const hasPermission = await SecurityUtils.checkLocationPermission();
       if (!hasPermission) {
-        Alert.alert('Permission Required', 'Please grant location permission to scan Wi-Fi networks.');
+        Alert.alert('Permission Required', 'Please grant location permission to scan Wi-Fi networks.', [
+          { text: 'OK', onPress: () => Linking.openSettings() },
+        ]);
         return;
       }
       setIsScanning(true);
@@ -35,15 +36,16 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
           signalStrength: network.signalStrength,
           frequency: network.frequency,
           channel: network.channel,
+          isOptimalChannel: network.isOptimalChannel,
         }));
         setWifiNetworks(sanitizedNetworks);
 
         // Generate recommendation
-        const strongNetwork = sanitizedNetworks.find(n => n.signalStrength > -70 && n.frequency >= 5000);
-        if (strongNetwork) {
-          setRecommendation(`Connect to ${strongNetwork.ssid} (5GHz, Channel ${strongNetwork.channel}) for better performance.`);
+        const optimalNetwork = sanitizedNetworks.find(n => n.isOptimalChannel && n.signalStrength > -70);
+        if (optimalNetwork) {
+          setRecommendation(`Connect to ${optimalNetwork.ssid} (2.4GHz, Channel ${optimalNetwork.channel}) for best performance.`);
         } else {
-          setRecommendation('Move closer to the router or place it in a central, open location.');
+          setRecommendation('Move closer to the router or place it in a central, open location. Use channel 1, 6, or 11.');
         }
       });
     } catch (e) {
@@ -52,19 +54,14 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
     }
   }, []);
 
-  // Connect to selected Wi-Fi network
-  const connectToWifi = useCallback(() => {
+  // Open system Wi-Fi settings for manual connection
+  const openWifiSettings = useCallback(() => {
     if (!selectedWifi) {
       Alert.alert('Error', 'Please select a Wi-Fi network.');
       return;
     }
-    BoostMode.connectToWifi(selectedWifi, (error, success) => {
-      if (error) {
-        Alert.alert('Error', `Failed to connect to ${selectedWifi}: ${error}`);
-        return;
-      }
-      Alert.alert('Success', `Connected to ${SecurityUtils.sanitizeInput(selectedWifi)}.`);
-    });
+    Linking.openSettings();
+    Alert.alert('Instructions', `Select ${SecurityUtils.sanitizeInput(selectedWifi)} in Wi-Fi settings to connect.`);
   }, [selectedWifi]);
 
   // Render Wi-Fi network item
@@ -75,12 +72,20 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
         onPress={() => setSelectedWifi(item.ssid)}
       >
         <Text style={tailwind(`text-lg ${isDarkMode ? 'text-white' : 'text-black'}`)}>
-          {item.ssid} ({item.signalStrength}dBm, {item.frequency >= 5000 ? '5GHz' : '2.4GHz'}, Channel {item.channel})
+          {item.ssid} ({item.signalStrength}dBm, 2.4GHz, Channel {item.channel})
+          {item.isOptimalChannel ? ' (Optimal)' : ''}
         </Text>
       </TouchableOpacity>
     ),
     [isDarkMode]
   );
+
+  // Optimize FlatList item layout
+  const getItemLayout = (data, index) => ({
+    length: 60,
+    offset: 60 * index,
+    index,
+  });
 
   return (
     <View style={tailwind(`bg-gray-800 p-4 rounded-lg mb-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`)}>
@@ -125,13 +130,14 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
             initialNumToRender={5}
             maxToRenderPerBatch={5}
             windowSize={3}
+            getItemLayout={getItemLayout}
           />
           <TouchableOpacity
             style={tailwind(`bg-green-500 p-2 rounded-lg mt-2`)}
-            onPress={connectToWifi}
+            onPress={openWifiSettings}
             disabled={!selectedWifi}
           >
-            <Text style={tailwind('text-white text-center font-bold')}>Connect to Selected Wi-Fi</Text>
+            <Text style={tailwind('text-white text-center font-bold')}>Open Wi-Fi Settings</Text>
           </TouchableOpacity>
         </>
       )}
