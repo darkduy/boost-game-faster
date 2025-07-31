@@ -3,6 +3,7 @@ package com.boostgamefaster
 import android.app.ActivityManager
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
@@ -50,7 +51,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Scans available Wi-Fi networks and returns their details.
+     * Scans available Wi-Fi networks and returns their details with optimal channel analysis.
      * @param callback Callback to return list of networks or error
      */
     @ReactMethod
@@ -63,14 +64,19 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                     return@launch
                 }
                 val scanResults = wifiManager.scanResults
+                val optimalChannels = listOf(1, 6, 11)
+                val channelCounts = scanResults.groupBy { calculateChannel(it.frequency) }
+                    .mapValues { it.value.size }
                 val networks = scanResults.map { result ->
+                    val channel = calculateChannel(result.frequency)
                     mapOf(
                         "ssid" to sanitizeInput(result.SSID ?: "Unknown"),
                         "signalStrength" to result.level,
                         "frequency" to result.frequency,
-                        "channel" to calculateChannel(result.frequency)
+                        "channel" to channel,
+                        "isOptimalChannel" to (channel in optimalChannels && channelCounts.getOrDefault(channel, 0) <= 3)
                     )
-                }
+                }.filter { it["frequency"] as Int <= 2484 } // Only 2.4GHz for Galaxy J4+
                 callback.invoke(null, networks)
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
@@ -79,7 +85,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Connects to a specified Wi-Fi network.
+     * Opens system Wi-Fi settings for manual connection.
      * @param ssid SSID of the network
      * @param callback Callback to return success or error
      */
@@ -87,15 +93,11 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     fun connectToWifi(ssid: String, callback: Callback) {
         coroutineScope.launch {
             try {
-                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 val sanitizedSsid = sanitizeInput(ssid)
-                val network = wifiManager.scanResults.find { it.SSID == sanitizedSsid }
-                if (network == null) {
-                    callback.invoke("Error: Network not found")
-                    return@launch
-                }
-                // Simplified connection logic (requires user to manually connect via settings on Android 9)
-                callback.invoke(null, "Please connect to ${sanitizedSsid} via system settings")
+                val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                callback.invoke(null, "Opened Wi-Fi settings. Please connect to ${sanitizedSsid}.")
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
@@ -103,7 +105,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Enables BoostMode with Wi-Fi scanning, graphics settings, Do Not Disturb, and FPS/ping overlay.
+     * Enables BoostMode with Wi-Fi optimization, graphics settings, Do Not Disturb, and FPS/ping overlay.
      * @param settings Graphics settings (resolution, texture, effects, fpsLimit)
      * @param callback Callback to return success or error
      */
@@ -140,12 +142,12 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 // Apply graphics settings
                 applyGraphicsSettings(validatedSettings)
 
-                // Scan Wi-Fi networks
+                // Scan Wi-Fi networks periodically
                 scanWifiNetworks { error, networks ->
                     if (error == null && networks != null) {
-                        val strongNetwork = networks.find { it["signalStrength"] > -70 && it["frequency"] >= 5000 }
-                        if (strongNetwork != null) {
-                            sharedPrefs.edit().putString("preferredWifi", strongNetwork["ssid"] as String).apply()
+                        val optimalNetwork = networks.find { it["isOptimalChannel"] == true && it["signalStrength"] > -70 }
+                        if (optimalNetwork != null) {
+                            sharedPrefs.edit().putString("preferredWifi", optimalNetwork["ssid"] as String).apply()
                         }
                     }
                 }
@@ -467,7 +469,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 withContext(Dispatchers.Main) {
                     overlayView?.text = "FPS: $fps | Ping: ${ping}ms"
                 }
-                kotlinx.coroutines.delay(10000)
+                kotlinx.coroutines.delay(15000) // Increased to 15s
             }
         }
     }
@@ -500,7 +502,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     private fun calculateChannel(frequency: Int): Int {
         return when {
             frequency in 2412..2484 -> (frequency - 2412) / 5 + 1
-            frequency in 5000..6000 -> (frequency - 5000) / 5
             else -> 0
         }
     }
