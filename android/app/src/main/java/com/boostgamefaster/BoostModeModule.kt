@@ -3,6 +3,7 @@ package com.boostgamefaster
 import android.app.ActivityManager
 import android.app.NotificationManager
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
 import android.view.MotionEvent
@@ -30,7 +31,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
     /**
      * Checks if device is rooted.
-     * @return True if rooted, false otherwise
+     * @param callback Callback to return result
      */
     @ReactMethod
     fun checkRootStatus(callback: Callback) {
@@ -49,7 +50,60 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Enables BoostMode with custom graphics settings, Do Not Disturb, and FPS/ping overlay.
+     * Scans available Wi-Fi networks and returns their details.
+     * @param callback Callback to return list of networks or error
+     */
+    @ReactMethod
+    fun scanWifiNetworks(callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                if (!wifiManager.isWifiEnabled) {
+                    callback.invoke("Error: Wi-Fi is disabled")
+                    return@launch
+                }
+                val scanResults = wifiManager.scanResults
+                val networks = scanResults.map { result ->
+                    mapOf(
+                        "ssid" to sanitizeInput(result.SSID ?: "Unknown"),
+                        "signalStrength" to result.level,
+                        "frequency" to result.frequency,
+                        "channel" to calculateChannel(result.frequency)
+                    )
+                }
+                callback.invoke(null, networks)
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Connects to a specified Wi-Fi network.
+     * @param ssid SSID of the network
+     * @param callback Callback to return success or error
+     */
+    @ReactMethod
+    fun connectToWifi(ssid: String, callback: Callback) {
+        coroutineScope.launch {
+            try {
+                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val sanitizedSsid = sanitizeInput(ssid)
+                val network = wifiManager.scanResults.find { it.SSID == sanitizedSsid }
+                if (network == null) {
+                    callback.invoke("Error: Network not found")
+                    return@launch
+                }
+                // Simplified connection logic (requires user to manually connect via settings on Android 9)
+                callback.invoke(null, "Please connect to ${sanitizedSsid} via system settings")
+            } catch (e: Exception) {
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Enables BoostMode with Wi-Fi scanning, graphics settings, Do Not Disturb, and FPS/ping overlay.
      * @param settings Graphics settings (resolution, texture, effects, fpsLimit)
      * @param callback Callback to return success or error
      */
@@ -80,16 +134,26 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 // Enable Do Not Disturb
                 enableDoNotDisturb()
 
-                // Close background apps asynchronously
+                // Close background apps
                 closeBackgroundApps()
 
                 // Apply graphics settings
                 applyGraphicsSettings(validatedSettings)
 
+                // Scan Wi-Fi networks
+                scanWifiNetworks { error, networks ->
+                    if (error == null && networks != null) {
+                        val strongNetwork = networks.find { it["signalStrength"] > -70 && it["frequency"] >= 5000 }
+                        if (strongNetwork != null) {
+                            sharedPrefs.edit().putString("preferredWifi", strongNetwork["ssid"] as String).apply()
+                        }
+                    }
+                }
+
                 // Show FPS/Ping overlay
                 showOverlay()
 
-                callback.invoke(null, "BoostMode enabled with custom graphics settings")
+                callback.invoke(null, "BoostMode enabled with Wi-Fi optimization")
             } catch (e: Exception) {
                 callback.invoke("Error: ${e.message}")
             }
@@ -97,7 +161,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Disables BoostMode, resets Do Not Disturb, removes overlay, and resets graphics settings.
+     * Disables BoostMode, resets settings, and removes overlay.
      * @param callback Callback to return success or error
      */
     @ReactMethod
@@ -128,12 +192,10 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     fun suggestGraphicsSettings(callback: Callback) {
         coroutineScope.launch {
             try {
-                // Check root status
                 if (checkRoot()) {
                     callback.invoke("Error: Rooted device detected")
                     return@launch
                 }
-
                 val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                 val memoryInfo = ActivityManager.MemoryInfo()
                 activityManager.getMemoryInfo(memoryInfo)
@@ -155,7 +217,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Checks if device is rooted by looking for common root indicators.
+     * Checks if device is rooted.
      * @return True if rooted, false otherwise
      */
     private fun checkRoot(): Boolean {
@@ -172,7 +234,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Validates graphics settings to prevent injection or invalid values.
+     * Validates graphics settings.
      * @param settings Input settings
      * @return Validated settings or null if invalid
      */
@@ -200,11 +262,10 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Checks required permissions for BoostMode, using cached results if available.
+     * Checks required permissions for BoostMode.
      * @return Error message if any permission is missing, null otherwise
      */
     private suspend fun checkPermissions(): String? = withContext(Dispatchers.IO) {
-        // Check cached permissions
         val cachedPermissions = sharedPrefs.getString("permissions", null)
         if (cachedPermissions == "granted") return@withContext null
 
@@ -217,19 +278,20 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.System.canWrite(context)) {
             return@withContext "PERMISSION_DENIED: Write settings permission required"
         }
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !notificationManager.isNotificationPolicyAccessGranted) {
-            return@withContext "PERMISSION_DENIED: Notification policy permission required"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (!notificationManager.isNotificationPolicyAccessGranted) {
+                return@withContext "PERMISSION_DENIED: Notification policy permission required"
+            }
         }
 
-        // Cache permission result
         sharedPrefs.edit().putString("permissions", "granted").apply()
         null
     }
 
     /**
      * Checks if the app has usage stats permission.
-     * @return True if permission is granted, false otherwise
+     * @return True if granted, false otherwise
      */
     private fun hasUsageStatsPermission(): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
@@ -245,7 +307,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Enables Do Not Disturb mode to block notifications.
+     * Enables Do Not Disturb mode.
      */
     private fun enableDoNotDisturb() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -255,7 +317,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Disables Do Not Disturb mode to restore notifications.
+     * Disables Do Not Disturb mode.
      */
     private fun disableDoNotDisturb() {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -265,7 +327,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Closes non-foreground apps to free up resources.
+     * Closes non-foreground apps.
      */
     private suspend fun closeBackgroundApps() = withContext(Dispatchers.IO) {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -279,17 +341,16 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Applies graphics settings (resolution, texture, effects, FPS limit).
+     * Applies graphics settings.
      * @param settings ReadableMap containing graphics settings
      */
     private suspend fun applyGraphicsSettings(settings: ReadableMap) = withContext(Dispatchers.IO) {
         try {
-            // Adjust screen resolution (simulated for Android 9)
             val resolution = settings.getString("resolution") ?: "default"
             if (resolution != "default") {
                 val scale = when (resolution) {
-                    "low" -> 0.5f // 480p
-                    "medium" -> 0.75f // 720p
+                    "low" -> 0.5f
+                    "medium" -> 0.75f
                     else -> 1.0f
                 }
                 withContext(Dispatchers.Main) {
@@ -302,8 +363,15 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 }
             }
 
-            // Store texture, effects, and FPS settings
             val texture = settings.getString("texture") ?: "medium"
+            val textureQuality = when (texture) {
+                "low" -> 0.5f
+                "medium" -> 0.75f
+                "high" -> 1.0f
+                else -> 0.75f
+            }
+            sharedPrefs.edit().putFloat("textureQuality", textureQuality).apply()
+
             val effects = settings.getString("effects") ?: "medium"
             val fpsLimit = settings.getString("fpsLimit") ?: "60"
             sharedPrefs.edit()
@@ -321,7 +389,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
      */
     private suspend fun resetGraphicsSettings() = withContext(Dispatchers.IO) {
         try {
-            // Reset resolution to default
             withContext(Dispatchers.Main) {
                 val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val display = windowManager.defaultDisplay
@@ -329,8 +396,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 display.getRealMetrics(metrics)
                 windowManager.defaultDisplay.getMetrics(metrics)
             }
-
-            // Clear stored graphics settings
             sharedPrefs.edit().clear().apply()
         } catch (e: Exception) {
             android.util.Log.e("BoostMode", "Failed to reset graphics settings: ${e.message}")
@@ -338,7 +403,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Shows FPS and ping overlay on screen with drag functionality.
+     * Shows FPS and ping overlay with drag functionality.
      */
     private fun showOverlay() {
         if (!Settings.canDrawOverlays(context)) return
@@ -365,7 +430,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             y = sharedPrefs.getInt("overlayY", 0)
         }
 
-        // Add drag functionality
         var initialX = 0f
         var initialY = 0f
         var initialTouchX = 0f
@@ -395,7 +459,6 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
 
         windowManager.addView(overlayView, params)
 
-        // Update FPS/Ping overlay
         coroutineScope.launch {
             var fps = 0
             while (overlayView != null) {
@@ -404,19 +467,41 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                 withContext(Dispatchers.Main) {
                     overlayView?.text = "FPS: $fps | Ping: ${ping}ms"
                 }
-                kotlinx.coroutines.delay(2000)
+                kotlinx.coroutines.delay(10000)
             }
         }
     }
 
     /**
-     * Removes FPS and ping overlay from screen.
+     * Removes FPS and ping overlay.
      */
     private fun removeOverlay() {
         overlayView?.let {
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             windowManager.removeView(it)
             overlayView = null
+        }
+    }
+
+    /**
+     * Sanitizes input to prevent injection attacks.
+     * @param input Input string
+     * @return Sanitized string
+     */
+    private fun sanitizeInput(input: String): String {
+        return input.replace(Regex("[<>{};]"), "")
+    }
+
+    /**
+     * Calculates Wi-Fi channel from frequency.
+     * @param frequency Frequency in MHz
+     * @return Channel number
+     */
+    private fun calculateChannel(frequency: Int): Int {
+        return when {
+            frequency in 2412..2484 -> (frequency - 2412) / 5 + 1
+            frequency in 5000..6000 -> (frequency - 5000) / 5
+            else -> 0
         }
     }
 }
