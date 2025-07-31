@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, memo } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, Alert, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator, Alert, Linking, Image } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useTailwind } from 'tailwind-rn';
 import { SecurityUtils } from '../utils/SecurityUtils';
@@ -13,6 +13,8 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
   const [isScanning, setIsScanning] = useState(false);
   const [selectedWifi, setSelectedWifi] = useState(null);
   const [recommendation, setRecommendation] = useState('');
+  const [channelData, setChannelData] = useState([]);
+  const [showRouterGuide, setShowRouterGuide] = useState(false);
 
   // Check location permission and scan Wi-Fi networks
   const scanWifiNetworks = useCallback(async () => {
@@ -25,12 +27,13 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
         return;
       }
       setIsScanning(true);
-      BoostMode.scanWifiNetworks((error, networks) => {
+      BoostMode.scanWifiNetworks((error, result) => {
         setIsScanning(false);
         if (error) {
           Alert.alert('Error', `Failed to scan Wi-Fi networks: ${error}`);
           return;
         }
+        const { networks, channelInterference } = result;
         const sanitizedNetworks = networks.map(network => ({
           ssid: SecurityUtils.sanitizeInput(network.ssid),
           signalStrength: network.signalStrength,
@@ -39,6 +42,10 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
           isOptimalChannel: network.isOptimalChannel,
         }));
         setWifiNetworks(sanitizedNetworks);
+        setChannelData(channelInterference.map(item => ({
+          channel: item.channel,
+          interference: item.interference,
+        })));
 
         // Generate recommendation
         const optimalNetwork = sanitizedNetworks.find(n => n.isOptimalChannel && n.signalStrength > -70);
@@ -63,6 +70,11 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
     Linking.openSettings();
     Alert.alert('Instructions', `Select ${SecurityUtils.sanitizeInput(selectedWifi)} in Wi-Fi settings to connect.`);
   }, [selectedWifi]);
+
+  // Toggle router guide visibility
+  const toggleRouterGuide = useCallback(() => {
+    setShowRouterGuide(!showRouterGuide);
+  }, [showRouterGuide]);
 
   // Render Wi-Fi network item
   const renderWifiItem = useCallback(
@@ -120,6 +132,52 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
           Recommendation: {recommendation}
         </Text>
       ) : null}
+      {channelData.length > 0 && (
+        <>
+          <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Wi-Fi Channel Interference</Text>
+          ```chartjs
+          {
+            "type": "bar",
+            "data": {
+              "labels": ${JSON.stringify(channelData.map(item => `Channel ${item.channel}`))},
+              "datasets": [{
+                "label": "Interference (Networks)",
+                "data": ${JSON.stringify(channelData.map(item => item.interference))},
+                "backgroundColor": "${isDarkMode ? '#4B5EAA' : '#60A5FA'}",
+                "borderColor": "${isDarkMode ? '#2C3E50' : '#2563EB'}",
+                "borderWidth": 1
+              }]
+            },
+            "options": {
+              "scales": {
+                "y": {
+                  "beginAtZero": true,
+                  "title": {
+                    "display": true,
+                    "text": "Number of Networks",
+                    "color": "${isDarkMode ? '#FFFFFF' : '#000000'}"
+                  }
+                },
+                "x": {
+                  "title": {
+                    "display": true,
+                    "text": "Wi-Fi Channel",
+                    "color": "${isDarkMode ? '#FFFFFF' : '#000000'}"
+                  }
+                }
+              },
+              "plugins": {
+                "legend": {
+                  "labels": {
+                    "color": "${isDarkMode ? '#FFFFFF' : '#000000'}"
+                  }
+                }
+              }
+            }
+          }
+          ```
+        </>
+      )}
       {wifiNetworks.length > 0 && (
         <>
           <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Available Wi-Fi Networks</Text>
@@ -140,6 +198,30 @@ const NetworkOptimizer = memo(({ vpnServer, setVpnServer, ping, networkState, is
             <Text style={tailwind('text-white text-center font-bold')}>Open Wi-Fi Settings</Text>
           </TouchableOpacity>
         </>
+      )}
+      <TouchableOpacity
+        style={tailwind(`bg-purple-500 p-2 rounded-lg mt-2`)}
+        onPress={toggleRouterGuide}
+      >
+        <Text style={tailwind('text-white text-center font-bold')}>
+          {showRouterGuide ? 'Hide Router Guide' : 'Show Router Guide'}
+        </Text>
+      </TouchableOpacity>
+      {showRouterGuide && (
+        <View style={tailwind(`mt-2 p-4 rounded-lg ${isDarkMode ? 'bg-gray-700' : 'bg-gray-300'}`)}>
+          <Text style={tailwind(`text-lg mb-2 ${isDarkMode ? 'text-white' : 'text-black'}`)}>Router Optimization Guide</Text>
+          <Text style={tailwind(`text-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`)}>
+            1. Place router in a central, open location, away from walls and metal objects.
+            2. Elevate router to 1-2 meters height for better signal spread.
+            3. Access router settings (e.g., 192.168.0.1) and set channel to 1, 6, or 11 (see chart above).
+            4. Enable QoS in router settings to prioritize gaming traffic.
+          </Text>
+          <Image
+            source={require('../assets/router_guide.jpg')}
+            style={tailwind('w-full h-40 rounded-lg')}
+            resizeMode="contain"
+          />
+        </View>
       )}
     </View>
   );
