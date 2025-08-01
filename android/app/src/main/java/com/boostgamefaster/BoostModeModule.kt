@@ -5,10 +5,10 @@ import android.app.NotificationManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.net.TrafficStats
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.provider.Settings
-import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.TextView
 import com.facebook.react.bridge.ReactApplicationContext
@@ -18,9 +18,13 @@ import com.facebook.react.bridge.Callback
 import com.facebook.react.bridge.ReadableMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+enum class Mode { NORMAL, EXTREME }
 
 class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private val context: Context = reactContext
@@ -40,72 +44,137 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     override fun getName(): String = "BoostMode"
 
     /**
-     * Checks if device is rooted.
+     * Enables BoostMode with specified mode and settings.
      */
     @ReactMethod
-    fun checkRootStatus(callback: Callback) {
-        coroutineScope.launch {
+    fun enableBoostMode(mode: String, settings: ReadableMap, callback: Callback) {
+        coroutineScope.launch(Dispatchers.IO) {
             try {
-                val isRooted = checkRoot()
-                if (isRooted) {
+                if (checkRoot()) {
                     callback.invoke("Error: Rooted device detected")
-                } else {
-                    callback.invoke(null, false)
+                    return@launch
                 }
+                val validatedSettings = validateSettings(settings)
+                if (validatedSettings == null) {
+                    callback.invoke("Error: Invalid graphics settings")
+                    return@launch
+                }
+                val permissionError = checkPermissions()
+                if (permissionError != null) {
+                    callback.invoke(permissionError)
+                    return@launch
+                }
+                backupSettings()
+                val boostMode = Mode.valueOf(sanitizeInput(mode).uppercase())
+                enableDoNotDisturb()
+                val gameApp = getForegroundGameApp()
+                if (gameApp != null) {
+                    sharedPrefs.edit().putString("currentGame", gameApp).apply()
+                    suggestQosSettings(gameApp) { _, _ -> }
+                    adjustNetworkLatency(gameApp, boostMode)
+                }
+                closeBackgroundApps(boostMode)
+                applyGraphicsSettings(validatedSettings)
+                if (boostMode == Mode.EXTREME) {
+                    disableAnimations()
+                    disableSync()
+                }
+                scanWifiNetworks { error, result ->
+                    if (error == null && result != null) {
+                        val networks = result["networks"] as List<Map<String, Any>>
+                        val optimalNetwork = networks.find { it["isOptimalChannel"] == true && it["signalStrength"] > -70 }
+                        if (optimalNetwork != null) {
+                            sharedPrefs.edit().putString("preferredWifi", optimalNetwork["ssid"] as String).apply()
+                        }
+                    }
+                }
+                showOverlay()
+                monitorPerformance() // Start performance monitoring
+                callback.invoke(null, "BoostMode enabled in $boostMode mode")
             } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "Root check failed: ${e.message}")
+                android.util.Log.e("BoostMode", "BoostMode enable failed: ${e.message}")
                 callback.invoke("Error: ${e.message}")
             }
         }
     }
 
     /**
-     * Scans Wi-Fi networks, detects repeaters, and analyzes interference.
+     * Disables BoostMode, resets settings, and removes overlay.
+     */
+    @ReactMethod
+    fun disableBoostMode(callback: Callback) {
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                disableDoNotDisturb()
+                disableBatterySaver { error, _ ->
+                    if (error != null) {
+                        android.util.Log.w("BoostMode", "Failed to disable battery saver: $error")
+                    }
+                }
+                restoreSettings()
+                removeOverlay()
+                sharedPrefs.edit().remove("currentGame").apply()
+                callback.invoke(null, "BoostMode disabled")
+            } catch (e: Exception) {
+                android.util.Log.e("BoostMode", "BoostMode disable failed: ${e.message}")
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Scans Wi-Fi networks every 20s with low CPU usage.
      */
     @ReactMethod
     fun scanWifiNetworks(callback: Callback) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                if (!wifiManager.isWifiEnabled) {
-                    callback.invoke("Error: Wi-Fi is disabled")
-                    return@launch
+        coroutineScope.launch {
+            flow {
+                while (true) {
+                    try {
+                        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                        if (!wifiManager.isWifiEnabled) {
+                            emit(mapOf("error" to "Wi-Fi is disabled"))
+                            return@flow
+                        }
+                        val scanResults = wifiManager.scanResults
+                        val optimalChannels = listOf(1, 6, 11)
+                        val channelCounts = scanResults.groupBy { calculateChannel(it.frequency) }
+                            .mapValues { it.value.size }
+                        val currentSsid = wifiManager.connectionInfo?.ssid?.replace("\"", "") ?: ""
+                        val networks = scanResults.map { result ->
+                            val channel = calculateChannel(result.frequency)
+                            val ssid = sanitizeInput(result.SSID ?: "Unknown")
+                            val isRepeater = ssid.contains(currentSsid, ignoreCase = true) && ssid != currentSsid
+                            mapOf(
+                                "ssid" to ssid,
+                                "signalStrength" to result.level,
+                                "frequency" to result.frequency,
+                                "channel" to channel,
+                                "isOptimalChannel" to (channel in optimalChannels && channelCounts.getOrDefault(channel, 0) <= 3),
+                                "isRepeater" to isRepeater
+                            )
+                        }.filter { it["frequency"] as Int <= 2484 } // Only 2.4GHz for Galaxy J4+
+                        val channelInterference = (1..11).map { channel ->
+                            mapOf(
+                                "channel" to channel,
+                                "interference" to channelCounts.getOrDefault(channel, 0)
+                            )
+                        }
+                        val gameApp = getForegroundGameApp()
+                        emit(mapOf(
+                            "networks" to networks,
+                            "channelInterference" to channelInterference,
+                            "repeaters" to networks.filter { it["isRepeater"] == true },
+                            "gameApp" to gameApp
+                        ))
+                    } catch (e: Exception) {
+                        android.util.Log.e("BoostMode", "Wi-Fi scan failed: ${e.message}")
+                        emit(mapOf("error" to e.message))
+                    }
+                    kotlinx.coroutines.delay(20000) // Scan every 20s
                 }
-                val scanResults = wifiManager.scanResults
-                val optimalChannels = listOf(1, 6, 11)
-                val channelCounts = scanResults.groupBy { calculateChannel(it.frequency) }
-                    .mapValues { it.value.size }
-                val currentSsid = wifiManager.connectionInfo?.ssid?.replace("\"", "") ?: ""
-                val networks = scanResults.map { result ->
-                    val channel = calculateChannel(result.frequency)
-                    val ssid = sanitizeInput(result.SSID ?: "Unknown")
-                    val isRepeater = ssid.contains(currentSsid, ignoreCase = true) && ssid != currentSsid
-                    mapOf(
-                        "ssid" to ssid,
-                        "signalStrength" to result.level,
-                        "frequency" to result.frequency,
-                        "channel" to channel,
-                        "isOptimalChannel" to (channel in optimalChannels && channelCounts.getOrDefault(channel, 0) <= 3),
-                        "isRepeater" to isRepeater
-                    )
-                }.filter { it["frequency"] as Int <= 2484 } // Only 2.4GHz for Galaxy J4+
-                val channelInterference = (1..11).map { channel ->
-                    mapOf(
-                        "channel" to channel,
-                        "interference" to channelCounts.getOrDefault(channel, 0)
-                    )
-                }
-                val gameApp = getForegroundGameApp()
-                val result = mapOf(
-                    "networks" to networks,
-                    "channelInterference" to channelInterference,
-                    "repeaters" to networks.filter { it["isRepeater"] == true },
-                    "gameApp" to gameApp
-                )
-                callback.invoke(null, result)
-            } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "Wi-Fi scan failed: ${e.message}")
-                callback.invoke("Error: ${e.message}")
+            }.flowOn(Dispatchers.IO).collect { result ->
+                callback.invoke(result["error"], result.takeUnless { it.containsKey("error") })
             }
         }
     }
@@ -118,7 +187,7 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
         coroutineScope.launch(Dispatchers.IO) {
             try {
                 val sanitizedAppName = sanitizeInput(appName)
-                val bandwidth = 85
+                val bandwidth = if (determineGameType(sanitizedAppName) == "FPS") 90 else 85
                 val port = getGamePort(sanitizedAppName) ?: "any"
                 val settings = mapOf(
                     "appName" to sanitizedAppName,
@@ -134,29 +203,43 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Checks performance metrics (CPU, RAM, ping).
+     * Monitors performance metrics (CPU, RAM, ping) every 60s.
      */
-    @ReactMethod
-    fun checkPerformance(callback: Callback) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                val memoryInfo = ActivityManager.MemoryInfo()
-                activityManager.getMemoryInfo(memoryInfo)
-                val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
-                val availRam = memoryInfo.availMem / (1024 * 1024) // MB
-                val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
-                val cpuUsage = getCpuUsage()
-                val ping = (Math.random() * 150).toInt()
-                val result = mapOf(
-                    "cpuUsage" to cpuUsage,
-                    "ramUsage" to ramUsage,
-                    "ping" to ping
-                )
-                callback.invoke(null, result)
-            } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "Performance check failed: ${e.message}")
-                callback.invoke("Error: ${e.message}")
+    private fun monitorPerformance() {
+        coroutineScope.launch {
+            flow {
+                while (true) {
+                    try {
+                        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val memoryInfo = ActivityManager.MemoryInfo()
+                        activityManager.getMemoryInfo(memoryInfo)
+                        val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
+                        val availRam = memoryInfo.availMem / (1024 * 1024) // MB
+                        val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
+                        val cpuUsage = getCpuUsage()
+                        val ping = sharedPrefs.getInt("targetPing", 75)
+                        val result = mapOf(
+                            "cpuUsage" to cpuUsage,
+                            "ramUsage" to ramUsage,
+                            "ping" to ping,
+                            "warning" to when {
+                                cpuUsage > 80 -> "High CPU usage detected"
+                                availRam < 300 -> "Low memory available"
+                                ping > 100 -> "High ping detected"
+                                else -> ""
+                            }
+                        )
+                        emit(result)
+                    } catch (e: Exception) {
+                        android.util.Log.e("BoostMode", "Performance check failed: ${e.message}")
+                        emit(mapOf("error" to e.message))
+                    }
+                    kotlinx.coroutines.delay(60000) // Check every 60s
+                }
+            }.flowOn(Dispatchers.IO).collect { result ->
+                if (result["warning"] != "") {
+                    showOverlay(result["warning"] as String)
+                }
             }
         }
     }
@@ -246,123 +329,155 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Enables BoostMode with auto game detection, Wi-Fi optimization, and profile settings.
+     * Adjusts network latency based on game type and mode.
      */
-    @ReactMethod
-    fun enableBoostMode(settings: ReadableMap, callback: Callback) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                if (checkRoot()) {
-                    callback.invoke("Error: Rooted device detected")
-                    return@launch
-                }
-                val validatedSettings = validateSettings(settings)
-                if (validatedSettings == null) {
-                    callback.invoke("Error: Invalid graphics settings")
-                    return@launch
-                }
-                val permissionError = checkPermissions()
-                if (permissionError != null) {
-                    callback.invoke(permissionError)
-                    return@launch
-                }
-                backupSettings()
-                enableDoNotDisturb()
-                val gameApp = getForegroundGameApp()
-                if (gameApp != null) {
-                    sharedPrefs.edit().putString("currentGame", gameApp).apply()
-                    suggestQosSettings(gameApp) { _, _ -> }
-                    adjustNetworkLatency(gameApp)
-                }
-                closeBackgroundApps()
-                applyGraphicsSettings(validatedSettings)
-                scanWifiNetworks { error, result ->
-                    if (error == null && result != null) {
-                        val networks = result["networks"] as List<Map<String, Any>>
-                        val optimalNetwork = networks.find { it["isOptimalChannel"] == true && it["signalStrength"] > -70 }
-                        if (optimalNetwork != null) {
-                            sharedPrefs.edit().putString("preferredWifi", optimalNetwork["ssid"] as String).apply()
-                        }
-                    }
-                }
-                showOverlay()
-                callback.invoke(null, "BoostMode enabled with auto game detection and network optimization")
-            } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "BoostMode enable failed: ${e.message}")
-                callback.invoke("Error: ${e.message}")
-            }
+    private fun adjustNetworkLatency(gameApp: String, mode: Mode) {
+        val gameType = determineGameType(gameApp)
+        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val targetPing = when {
+            mode == Mode.EXTREME && gameType == "FPS" -> 40
+            gameType == "FPS" -> 50
+            gameType == "RPG" -> 100
+            else -> 75
         }
+        TrafficStats.setThreadStatsTag(if (gameType == "FPS") 0xF0 else 0xF1) // Mock UDP/TCP priority
+        wifiManager.setWifiEnabled(true)
+        sharedPrefs.edit().putInt("targetPing", targetPing).apply()
     }
 
     /**
-     * Disables BoostMode, resets settings, and removes overlay.
+     * Determines game type based on package name.
      */
-    @ReactMethod
-    fun disableBoostMode(callback: Callback) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                disableDoNotDisturb()
-                disableBatterySaver { error, _ ->
-                    if (error != null) {
-                        android.util.Log.w("BoostMode", "Failed to disable battery saver: $error")
-                    }
-                }
-                restoreSettings()
-                removeOverlay()
-                sharedPrefs.edit().remove("currentGame").apply()
-                callback.invoke(null, "BoostMode disabled")
-            } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "BoostMode disable failed: ${e.message}")
-                callback.invoke("Error: ${e.message}")
-            }
-        }
-    }
-
-    /**
-     * Suggests optimal graphics settings based on device performance.
-     */
-    @ReactMethod
-    fun suggestGraphicsSettings(callback: Callback) {
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                if (checkRoot()) {
-                    callback.invoke("Error: Rooted device detected")
-                    return@launch
-                }
-                val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                val memoryInfo = ActivityManager.MemoryInfo()
-                activityManager.getMemoryInfo(memoryInfo)
-                val totalRam = memoryInfo.totalMem / (1024 * 1024) // MB
-                val availRam = memoryInfo.availMem / (1024 * 1024) // MB
-                val ramUsage = ((totalRam - availRam) / totalRam.toFloat()) * 100
-                val suggestedSettings = mapOf(
-                    "resolution" to if (ramUsage > 70) "low" else "medium",
-                    "texture" to if (ramUsage > 70) "low" else "medium",
-                    "effects" to if (ramUsage > 70) "off" else "low",
-                    "fpsLimit" to if (ramUsage > 60) "30" else "60"
-                )
-                callback.invoke(null, suggestedSettings)
-            } catch (e: Exception) {
-                android.util.Log.e("BoostMode", "Graphics suggestion failed: ${e.message}")
-                callback.invoke("Error: ${e.message}")
-            }
-        }
-    }
-
-    /**
-     * Checks if device is rooted.
-     */
-    private fun checkRoot(): Boolean {
-        val rootFiles = arrayOf(
-            "/system/app/Superuser.apk",
-            "/sbin/su",
-            "/system/bin/su",
-            "/system/xbin/su",
-            "/data/local/xbin/su",
-            "/data/local/bin/su",
-            "/system/sd/xbin/su"
+    private fun determineGameType(gameApp: String): String {
+        val gameTypes = mapOf(
+            "com.tencent.ig" to "FPS", // PUBG Mobile
+            "com.activision.callofduty.shooter" to "FPS", // Call of Duty Mobile
+            "com.miHoYo.GenshinImpact" to "RPG" // Genshin Impact
         )
-        return rootFiles.any { File(it).exists() }
+        return gameTypes[gameApp] ?: "Other"
+    }
+
+    /**
+     * Backs up system settings before applying BoostMode.
+     */
+    private suspend fun backupSettings() = withContext(Dispatchers.IO) {
+        try {
+            if (!Settings.System.canWrite(context)) return@withContext
+            val contentResolver = context.contentResolver
+            originalSettings = SettingsBackup(
+                animationScaleWindow = Settings.System.getFloat(contentResolver, Settings.System.WINDOW_ANIMATION_SCALE, 1.0f),
+                animationScaleTransition = Settings.System.getFloat(contentResolver, Settings.System.TRANSITION_ANIMATION_SCALE, 1.0f),
+                animationScaleAnimator = Settings.System.getFloat(contentResolver, Settings.System.ANIMATOR_DURATION_SCALE, 1.0f),
+                syncEnabled = ContentResolver.getMasterSyncAutomatically(),
+                brightness = Settings.System.getFloat(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Settings backup failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Restores system settings after disabling BoostMode.
+     */
+    private suspend fun restoreSettings() = withContext(Dispatchers.IO) {
+        try {
+            if (!Settings.System.canWrite(context)) return@withContext
+            originalSettings?.let { settings ->
+                val contentResolver = context.contentResolver
+                Settings.System.putFloat(contentResolver, Settings.System.WINDOW_ANIMATION_SCALE, settings.animationScaleWindow)
+                Settings.System.putFloat(contentResolver, Settings.System.TRANSITION_ANIMATION_SCALE, settings.animationScaleTransition)
+                Settings.System.putFloat(contentResolver, Settings.System.ANIMATOR_DURATION_SCALE, settings.animationScaleAnimator)
+                ContentResolver.setMasterSyncAutomatically(settings.syncEnabled)
+                settings.brightness?.let {
+                    Settings.System.putFloat(contentResolver, Settings.System.SCREEN_BRIGHTNESS, it)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Settings restore failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Disables system animations for Extreme Boost mode.
+     */
+    private suspend fun disableAnimations() = withContext(Dispatchers.IO) {
+        try {
+            if (!Settings.System.canWrite(context)) return@withContext
+            val contentResolver = context.contentResolver
+            Settings.System.putFloat(contentResolver, Settings.System.WINDOW_ANIMATION_SCALE, 0f)
+            Settings.System.putFloat(contentResolver, Settings.System.TRANSITION_ANIMATION_SCALE, 0f)
+            Settings.System.putFloat(contentResolver, Settings.System.ANIMATOR_DURATION_SCALE, 0f)
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Disable animations failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Restores system animations.
+     */
+    private suspend fun restoreAnimations() = withContext(Dispatchers.IO) {
+        try {
+            if (!Settings.System.canWrite(context)) return@withContext
+            originalSettings?.let { settings ->
+                val contentResolver = context.contentResolver
+                Settings.System.putFloat(contentResolver, Settings.System.WINDOW_ANIMATION_SCALE, settings.animationScaleWindow)
+                Settings.System.putFloat(contentResolver, Settings.System.TRANSITION_ANIMATION_SCALE, settings.animationScaleTransition)
+                Settings.System.putFloat(contentResolver, Settings.System.ANIMATOR_DURATION_SCALE, settings.animationScaleAnimator)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Restore animations failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Disables sync for Extreme Boost mode.
+     */
+    private fun disableSync() {
+        try {
+            ContentResolver.setMasterSyncAutomatically(false)
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Disable sync failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Closes background apps based on mode.
+     */
+    private suspend fun closeBackgroundApps(mode: Mode) = withContext(Dispatchers.IO) {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val runningApps = activityManager.runningAppProcesses?.filter {
+            it.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
+                    it.processName != context.packageName &&
+                    !isSystemApp(it.processName)
+        } ?: emptyList()
+        runningApps.forEach { process ->
+            if (mode == Mode.EXTREME || !isEssentialApp(process.processName)) {
+                activityManager.killBackgroundProcesses(process.processName)
+            }
+        }
+    }
+
+    /**
+     * Checks if an app is a system or essential app.
+     */
+    private fun isSystemApp(processName: String): Boolean {
+        val systemApps = listOf(
+            "com.android.systemui",
+            "com.android.phone",
+            "com.android.settings"
+        )
+        return systemApps.any { processName.contains(it) }
+    }
+
+    /**
+     * Checks if an app is essential (e.g., launcher, dialer).
+     */
+    private fun isEssentialApp(processName: String): Boolean {
+        val essentialApps = listOf(
+            "com.android.launcher",
+            "com.android.dialer"
+        )
+        return essentialApps.any { processName.contains(it) }
     }
 
     /**
@@ -452,17 +567,48 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
     }
 
     /**
-     * Closes non-foreground apps.
+     * Shows performance warning overlay.
      */
-    private suspend fun closeBackgroundApps() = withContext(Dispatchers.IO) {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val runningApps = activityManager.runningAppProcesses?.filter {
-            it.importance != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
-            it.processName != context.packageName &&
-            !isSystemApp(it.processName)
-        } ?: emptyList()
-        runningApps.forEach { process ->
-            activityManager.killBackgroundProcesses(process.processName)
+    private fun showOverlay(message: String = "BoostMode Active") {
+        coroutineScope.launch(Dispatchers.Main) {
+            if (overlayView != null) return@launch
+            if (!Settings.canDrawOverlays(context)) return@launch
+            overlayView = TextView(context).apply {
+                text = message
+                setBackgroundColor(android.graphics.Color.argb(128, 0, 0, 0))
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 14f
+                setPadding(10, 10, 10, 10)
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                else
+                    WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                android.graphics.PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = android.view.Gravity.TOP or android.view.Gravity.LEFT
+                x = 10
+                y = 10
+            }
+            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            windowManager.addView(overlayView, params)
+        }
+    }
+
+    /**
+     * Removes performance warning overlay.
+     */
+    private fun removeOverlay() {
+        coroutineScope.launch(Dispatchers.Main) {
+            overlayView?.let {
+                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                windowManager.removeView(it)
+                overlayView = null
+            }
         }
     }
 
@@ -487,9 +633,134 @@ class BoostModeModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
                     windowManager.defaultDisplay.getMetrics(metrics)
                 }
             }
-            val texture = settings.getString("texture") ?: "medium"
-            val textureQuality = when (texture) {
-                "low" -> 0.5f
-                "medium" -> 0.75f
-                "high" -> 1.0f
-                else -> 0.75f
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "Graphics settings failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Enables battery saver mode.
+     */
+    @ReactMethod
+    fun enableBatterySaver(callback: Callback) {
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                if (!Settings.System.canWrite(context)) {
+                    callback.invoke("Error: Write settings permission required")
+                    return@launch
+                }
+                originalSettings?.brightness = Settings.System.getFloat(
+                    context.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS
+                )
+                Settings.System.putFloat(
+                    context.contentResolver,
+                    Settings.System.SCREEN_BRIGHTNESS,
+                    0.2f * 255
+                )
+                Settings.System.putInt(
+                    context.contentResolver,
+                    Settings.System.VIBRATE_ON,
+                    0
+                )
+                callback.invoke(null, "Battery saver enabled")
+            } catch (e: Exception) {
+                android.util.Log.e("BoostMode", "Battery saver enable failed: ${e.message}")
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Disables battery saver mode.
+     */
+    @ReactMethod
+    fun disableBatterySaver(callback: Callback) {
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                if (!Settings.System.canWrite(context)) {
+                    callback.invoke("Error: Write settings permission required")
+                    return@launch
+                }
+                originalSettings?.brightness?.let {
+                    Settings.System.putFloat(
+                        context.contentResolver,
+                        Settings.System.SCREEN_BRIGHTNESS,
+                        it
+                    )
+                }
+                Settings.System.putInt(
+                    context.contentResolver,
+                    Settings.System.VIBRATE_ON,
+                    1
+                )
+                callback.invoke(null, "Battery saver disabled")
+            } catch (e: Exception) {
+                android.util.Log.e("BoostMode", "Battery saver disable failed: ${e.message}")
+                callback.invoke("Error: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Calculates Wi-Fi channel from frequency.
+     */
+    private fun calculateChannel(frequency: Int): Int {
+        return when {
+            frequency in 2412..2484 -> (frequency - 2412) / 5 + 1
+            else -> 1
+        }
+    }
+
+    /**
+     * Sanitizes input to prevent injection.
+     */
+    private fun sanitizeInput(input: String): String {
+        return input.replace("[^a-zA-Z0-9_\\-]".toRegex(), "")
+    }
+
+    /**
+     * Gets the foreground game app.
+     */
+    private fun getForegroundGameApp(): String? {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val runningApps = activityManager.runningAppProcesses
+        return runningApps?.find {
+            it.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND &&
+                    determineGameType(it.processName) != "Other"
+        }?.processName
+    }
+
+    /**
+     * Gets game port based on app name.
+     */
+    private fun getGamePort(appName: String): String? {
+        val gamePorts = mapOf(
+            "com.tencent.ig" to "7777", // PUBG Mobile
+            "com.activision.callofduty.shooter" to "27015", // Call of Duty Mobile
+            "com.miHoYo.GenshinImpact" to "22102" // Genshin Impact
+        )
+        return gamePorts[appName]
+    }
+
+    /**
+     * Gets CPU usage (simplified).
+     */
+    private fun getCpuUsage(): Float {
+        return try {
+            val runtime = Runtime.getRuntime()
+            val process = runtime.exec("top -n 1")
+            val reader = process.inputStream.bufferedReader()
+            reader.readLines().sumOf { line ->
+                if (line.contains(context.packageName)) {
+                    line.split("\\s+".toRegex()).getOrNull(8)?.toFloatOrNull() ?: 0f
+                } else {
+                    0f
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("BoostMode", "CPU usage check failed: ${e.message}")
+            0f
+        }
+    }
+}
